@@ -26,6 +26,7 @@ from app.models import (
     URLItem,
     URLShortenRequest,
     URLShortenResponse,
+    URLStatsResponse,
 )
 from app.utils import (
     generate_short_code,
@@ -394,12 +395,13 @@ def retrieve_stored_url_by_code(
         "original_url": record.original_url,
         "click_count": record.click_count,
         "created_at": record.created_at.isoformat() if record.created_at else None,
+        "last_accessed_at": record.last_accessed_at.isoformat() if record.last_accessed_at else None,
         "is_active": record.is_active,
     }
 
 
 # ==========================================
-# 8. URL Redirection Endpoint (GET) - Lab 8
+# 8. URL Redirection & Access Tracking (GET) - Lab 8 & Lab 10
 # ==========================================
 @app.get(
     "/{short_code}",
@@ -407,17 +409,18 @@ def retrieve_stored_url_by_code(
     status_code=status.HTTP_307_TEMPORARY_REDIRECT,
     tags=["URL Redirection"],
     summary="Redirect Short Code to Original Website",
-    description="Looks up the short code in SQLite and issues an HTTP 307 Temporary Redirect to the original destination URL.",
+    description="Looks up the short code in SQLite, increments the access tracking counter, and issues an HTTP 307 Temporary Redirect.",
 )
 def redirect_to_original_url(
     short_code: str,
     db: Session = Depends(get_db),
 ):
     """
-    Lab 8: URL Redirection
+    Lab 8 & Lab 10: URL Redirection + Access Tracking
     1. Retrieve original URL from SQLite using indexed short_code.
-    2. Validate active status.
-    3. Issue HTTP 307 Temporary Redirect.
+    2. Check active status.
+    3. Atomically increment click_count and record last_accessed_at timestamp.
+    4. Issue HTTP 307 Temporary Redirect.
     """
     # Exclude system documentation paths if accessed
     if short_code in ("docs", "redoc", "openapi.json", "favicon.ico", "health"):
@@ -436,8 +439,75 @@ def redirect_to_original_url(
             detail=f"This short URL has been deactivated.",
         )
 
+    # Lab 10: Access Tracking - Increment click count & save last accessed timestamp
+    record.click_count += 1
+    record.last_accessed_at = datetime.now(timezone.utc)
+    db.commit()
+
     return RedirectResponse(
         url=record.original_url,
         status_code=status.HTTP_307_TEMPORARY_REDIRECT,
     )
+
+
+# ==========================================
+# 9. Access Tracking & URL Statistics (GET) - Lab 10
+# ==========================================
+@app.get(
+    "/api/urls/{short_code}/stats",
+    response_model=URLStatsResponse,
+    tags=["Analytics & Statistics"],
+    summary="Get Access Tracking & Click Statistics for a Short URL",
+    description="Displays click count, creation date, and last access timestamp for a short link.",
+)
+def get_url_statistics(
+    short_code: str,
+    db: Session = Depends(get_db),
+):
+    record = db.query(URLItem).filter(URLItem.short_code == short_code).first()
+    if not record:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Short code '{short_code}' not found in database.",
+        )
+
+    return URLStatsResponse(
+        short_code=record.short_code,
+        original_url=record.original_url,
+        click_count=record.click_count,
+        created_at=record.created_at,
+        last_accessed_at=record.last_accessed_at,
+        expires_at=record.expires_at,
+        is_active=record.is_active,
+        status="active" if record.is_active else "inactive",
+    )
+
+
+# ==========================================
+# 10. Global Analytics Summary (GET) - Lab 10
+# ==========================================
+@app.get(
+    "/api/stats/summary",
+    tags=["Analytics & Statistics"],
+    summary="Service-Wide Analytics Summary",
+    description="Displays total links stored, total clicks across all links, and the most clicked link.",
+)
+def get_global_statistics(db: Session = Depends(get_db)):
+    from sqlalchemy import func
+
+    total_links = db.query(URLItem).count()
+    total_clicks = db.query(func.sum(URLItem.click_count)).scalar() or 0
+    top_link = db.query(URLItem).order_by(URLItem.click_count.desc()).first()
+
+    return {
+        "total_short_links": total_links,
+        "total_redirections_served": total_clicks,
+        "most_clicked_link": {
+            "short_code": top_link.short_code if top_link else None,
+            "original_url": top_link.original_url if top_link else None,
+            "clicks": top_link.click_count if top_link else 0,
+        } if top_link else None,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
+
 

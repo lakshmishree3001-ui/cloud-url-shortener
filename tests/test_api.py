@@ -237,3 +237,58 @@ def test_lab9_error_duplicate_urls_and_custom_aliases():
     assert "reused" in res4.json()["status"]
 
 
+# --- Lab 10 Tests: Access Tracking & Click Analytics ---
+def test_lab10_click_counter_increments_on_redirection():
+    """Verify that accessing /{short_code} increments click_count from 0 to 1, 2, 3."""
+    post_res = client.post("/api/shorten", json={"url": "https://aws.amazon.com/rds/", "custom_code": "rds-clicks"})
+    assert post_res.status_code == 201
+
+    # Check initial stats: click_count should be 0
+    stats0 = client.get("/api/urls/rds-clicks/stats").json()
+    assert stats0["click_count"] == 0
+    assert stats0["last_accessed_at"] is None
+
+    # First redirection access
+    r1 = client.get("/rds-clicks", follow_redirects=False)
+    assert r1.status_code == 307
+
+    stats1 = client.get("/api/urls/rds-clicks/stats").json()
+    assert stats1["click_count"] == 1
+    assert stats1["last_accessed_at"] is not None
+
+    # Second redirection access
+    r2 = client.get("/rds-clicks", follow_redirects=False)
+    assert r2.status_code == 307
+
+    stats2 = client.get("/api/urls/rds-clicks/stats").json()
+    assert stats2["click_count"] == 2
+
+    # Third redirection access
+    r3 = client.get("/rds-clicks", follow_redirects=False)
+    assert r3.status_code == 307
+
+    stats3 = client.get("/api/urls/rds-clicks/stats").json()
+    assert stats3["click_count"] == 3
+
+
+def test_lab10_global_analytics_summary():
+    """Verify GET /api/stats/summary calculates total links, total clicks, and top link."""
+    # Create two links
+    client.post("/api/shorten", json={"url": "https://aws.amazon.com/route53/", "custom_code": "top-link"})
+    client.post("/api/shorten", json={"url": "https://aws.amazon.com/iam/", "custom_code": "other-link"})
+
+    # Click top-link 3 times
+    for _ in range(3):
+        client.get("/top-link", follow_redirects=False)
+
+    # Click other-link 1 time
+    client.get("/other-link", follow_redirects=False)
+
+    summary = client.get("/api/stats/summary").json()
+    assert summary["total_short_links"] == 2
+    assert summary["total_redirections_served"] == 4
+    assert summary["most_clicked_link"]["short_code"] == "top-link"
+    assert summary["most_clicked_link"]["clicks"] == 3
+
+
+

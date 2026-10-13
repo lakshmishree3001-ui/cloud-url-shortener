@@ -31,6 +31,7 @@ class URLItem(Base):
     original_url = Column(String(2048), nullable=False)
     click_count = Column(Integer, default=0, nullable=False)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), nullable=False)
+    last_accessed_at = Column(DateTime, nullable=True)
     expires_at = Column(DateTime, nullable=True)
     is_active = Column(Boolean, default=True, nullable=False)
 
@@ -141,7 +142,23 @@ class URLDatabaseRecord(BaseModel):
     original_url: str
     click_count: int
     created_at: datetime
+    last_accessed_at: Optional[datetime] = None
     expires_at: Optional[datetime] = None
     is_active: bool
 
     model_config = {"from_attributes": True}
+
+
+class URLStatsResponse(BaseModel):
+    """Schema representing URL access tracking and click statistics (Lab 10)."""
+    short_code: str
+    original_url: str
+    click_count: int
+    created_at: datetime
+    last_accessed_at: Optional[datetime] = None
+    expires_at: Optional[datetime] = None
+    is_active: bool
+    status: str = "active"
+
+    model_config = {"from_attributes": True}
+
