@@ -1,7 +1,8 @@
 """
-Automated unit & integration tests for Labs 3 through 11.
+Automated unit & integration tests for Labs 3 through 12.
 Tests API connectivity with SQLite database, endpoints, validation, error scenarios,
-access tracking, click analytics, and URL expiration (TTL).
+access tracking, click analytics, URL expiration (TTL), top URL leaderboards,
+domain distributions, and CloudWatch telemetry observability reports.
 """
 from datetime import datetime, timezone, timedelta
 import pytest
@@ -178,13 +179,11 @@ def test_redirect_non_existing_code_returns_404():
 # --- Lab 9 Tests: Comprehensive Error Handling ---
 def test_lab9_error_invalid_urls():
     """Verify handling of invalid schemes and malformed domain structures."""
-    # Invalid scheme
     r1 = client.post("/api/shorten", json={"url": "javascript:alert('attack')"})
     assert r1.status_code == 400
     assert r1.json()["error"] is True
     assert "Unsupported URL scheme" in r1.json()["detail"]
 
-    # Invalid host
     r2 = client.post("/api/shorten", json={"url": "https://not a valid domain"})
     assert r2.status_code == 400
     assert r2.json()["error"] is True
@@ -217,7 +216,6 @@ def test_lab9_error_non_existing_short_codes():
 
 def test_lab9_error_duplicate_urls_and_custom_aliases():
     """Verify duplicate vanity alias yields 409, and duplicate long URL is reused."""
-    # 1. Custom alias conflict (409)
     res1 = client.post("/api/shorten", json={"url": "https://aws.amazon.com/ec2/", "custom_code": "vanity-code"})
     assert res1.status_code == 201
 
@@ -226,7 +224,6 @@ def test_lab9_error_duplicate_urls_and_custom_aliases():
     assert res2.json()["error"] is True
     assert "already in use" in res2.json()["detail"]
 
-    # 2. Duplicate long URL without custom code: returns existing short code without duplicating rows
     res3 = client.post("/api/shorten", json={"url": "https://aws.amazon.com/lambda/"})
     assert res3.status_code == 201
     code1 = res3.json()["short_code"]
@@ -243,12 +240,10 @@ def test_lab10_click_counter_increments_on_redirection():
     post_res = client.post("/api/shorten", json={"url": "https://aws.amazon.com/rds/", "custom_code": "rds-clicks"})
     assert post_res.status_code == 201
 
-    # Check initial stats: click_count should be 0
     stats0 = client.get("/api/urls/rds-clicks/stats").json()
     assert stats0["click_count"] == 0
     assert stats0["last_accessed_at"] is None
 
-    # First redirection access
     r1 = client.get("/rds-clicks", follow_redirects=False)
     assert r1.status_code == 307
 
@@ -256,14 +251,12 @@ def test_lab10_click_counter_increments_on_redirection():
     assert stats1["click_count"] == 1
     assert stats1["last_accessed_at"] is not None
 
-    # Second redirection access
     r2 = client.get("/rds-clicks", follow_redirects=False)
     assert r2.status_code == 307
 
     stats2 = client.get("/api/urls/rds-clicks/stats").json()
     assert stats2["click_count"] == 2
 
-    # Third redirection access
     r3 = client.get("/rds-clicks", follow_redirects=False)
     assert r3.status_code == 307
 
@@ -273,15 +266,12 @@ def test_lab10_click_counter_increments_on_redirection():
 
 def test_lab10_global_analytics_summary():
     """Verify GET /api/stats/summary calculates total links, total clicks, and top link."""
-    # Create two links
     client.post("/api/shorten", json={"url": "https://aws.amazon.com/route53/", "custom_code": "top-link"})
     client.post("/api/shorten", json={"url": "https://aws.amazon.com/iam/", "custom_code": "other-link"})
 
-    # Click top-link 3 times
     for _ in range(3):
         client.get("/top-link", follow_redirects=False)
 
-    # Click other-link 1 time
     client.get("/other-link", follow_redirects=False)
 
     summary = client.get("/api/stats/summary").json()
@@ -303,13 +293,11 @@ def test_lab11_shorten_with_expiration_hours():
     data = res.json()
     assert data["expires_at"] is not None
 
-    # Query details
     url_details = client.get("/api/urls/trail-ttl").json()
     assert url_details["expires_at"] is not None
     assert url_details["is_expired"] is False
-    assert url_details["time_remaining_seconds"] > 7000  # ~2 hours is 7200s
+    assert url_details["time_remaining_seconds"] > 7000
 
-    # Access redirection succeeds while active
     redir = client.get("/trail-ttl", follow_redirects=False)
     assert redir.status_code == 307
 
@@ -327,7 +315,7 @@ def test_lab11_shorten_with_expiration_days():
 
     stats = client.get("/api/urls/sns-ttl/stats").json()
     assert stats["is_expired"] is False
-    assert stats["time_remaining_seconds"] > 500000  # 7 days is 604,800s
+    assert stats["time_remaining_seconds"] > 500000
     assert stats["status"] == "active"
 
 
@@ -359,12 +347,10 @@ def test_lab11_expired_url_returns_410_gone():
     db.commit()
     db.close()
 
-    # Attempt redirection: must return 410 Gone
     redir = client.get("/already-dead", follow_redirects=False)
     assert redir.status_code == 410
     assert "expired" in redir.json()["detail"].lower()
 
-    # Check stats endpoint reflects expiration
     stats = client.get("/api/urls/already-dead/stats").json()
     assert stats["is_expired"] is True
     assert stats["is_active"] is False
@@ -376,7 +362,6 @@ def test_lab11_maintenance_cleanup_sweeper():
     """Verify POST /api/maintenance/cleanup-expired scans and marks expired records inactive."""
     db = TestingSessionLocal()
     now = datetime.now(timezone.utc)
-    # 1 expired item
     db.add(URLItem(
         short_code="sweep-me-1",
         original_url="https://aws.amazon.com/sweep1/",
@@ -385,7 +370,6 @@ def test_lab11_maintenance_cleanup_sweeper():
         expires_at=now - timedelta(days=1),
         is_active=True,
     ))
-    # 1 active item with future expiration
     db.add(URLItem(
         short_code="keep-me-active",
         original_url="https://aws.amazon.com/keep/",
@@ -397,7 +381,6 @@ def test_lab11_maintenance_cleanup_sweeper():
     db.commit()
     db.close()
 
-    # Trigger maintenance cleanup
     clean_res = client.post("/api/maintenance/cleanup-expired")
     assert clean_res.status_code == 200
     clean_data = clean_res.json()
@@ -405,7 +388,6 @@ def test_lab11_maintenance_cleanup_sweeper():
     assert clean_data["deactivated_count"] >= 1
     assert "sweep-me-1" in clean_data["deactivated_codes"]
 
-    # Verify query for expired URLs
     expired_list = client.get("/api/urls/status/expired").json()
     assert expired_list["total_expired"] >= 1
 
@@ -425,3 +407,115 @@ def test_lab11_batch_shorten_with_ttl():
     assert data["successful_count"] == 2
     for item in data["items"]:
         assert item["expires_at"] is not None
+
+
+# --- Lab 12 Tests: Analytics & Statistics Reporting API ---
+def test_lab12_top_performing_urls_ranking():
+    """Verify GET /api/stats/top returns ranked leaderboard sorted by clicks."""
+    client.post("/api/shorten", json={"url": "https://aws.amazon.com/ec2/", "custom_code": "gold-link"})
+    client.post("/api/shorten", json={"url": "https://github.com/torvalds/linux", "custom_code": "silver-link"})
+    client.post("/api/shorten", json={"url": "https://python.org/", "custom_code": "bronze-link"})
+
+    # Clicks: gold=5, silver=3, bronze=1
+    for _ in range(5):
+        client.get("/gold-link", follow_redirects=False)
+    for _ in range(3):
+        client.get("/silver-link", follow_redirects=False)
+    client.get("/bronze-link", follow_redirects=False)
+
+    top_res = client.get("/api/stats/top?limit=2")
+    assert top_res.status_code == 200
+    data = top_res.json()
+    assert data["limit"] == 2
+    assert data["returned_count"] == 2
+
+    # Verify ranking
+    assert data["top_links"][0]["rank"] == 1
+    assert data["top_links"][0]["short_code"] == "gold-link"
+    assert data["top_links"][0]["click_count"] == 5
+    assert data["top_links"][0]["destination_domain"] == "aws.amazon.com"
+
+    assert data["top_links"][1]["rank"] == 2
+    assert data["top_links"][1]["short_code"] == "silver-link"
+    assert data["top_links"][1]["click_count"] == 3
+    assert data["top_links"][1]["destination_domain"] == "github.com"
+
+
+def test_lab12_top_urls_query_param_validation():
+    """Verify limit parameter enforces 1 <= limit <= 50."""
+    res_high = client.get("/api/stats/top?limit=99")
+    assert res_high.status_code == 400
+    assert "less than or equal to 50" in res_high.json()["detail"]
+
+    res_low = client.get("/api/stats/top?limit=0")
+    assert res_low.status_code == 400
+    assert "greater than or equal to 1" in res_low.json()["detail"]
+
+
+def test_lab12_destination_domain_analytics():
+    """Verify GET /api/stats/domains breaks down link share and click percentages by target domain."""
+    client.post("/api/shorten", json={"url": "https://aws.amazon.com/s3/", "custom_code": "aws-1"})
+    client.post("/api/shorten", json={"url": "https://aws.amazon.com/rds/", "custom_code": "aws-2"})
+    client.post("/api/shorten", json={"url": "https://github.com/fastapi/fastapi", "custom_code": "gh-1"})
+
+    # Clicks: aws-1=3, aws-2=1 (Total AWS = 4), gh-1=1 (Total GH = 1). Total clicks = 5
+    for _ in range(3):
+        client.get("/aws-1", follow_redirects=False)
+    client.get("/aws-2", follow_redirects=False)
+    client.get("/gh-1", follow_redirects=False)
+
+    domain_res = client.get("/api/stats/domains")
+    assert domain_res.status_code == 200
+    data = domain_res.json()
+    assert data["total_unique_domains"] == 2
+    assert data["total_tracked_clicks"] == 5
+
+    # Top domain should be aws.amazon.com with 4 clicks (80.0%)
+    top_domain = data["domains"][0]
+    assert top_domain["domain"] == "aws.amazon.com"
+    assert top_domain["link_count"] == 2
+    assert top_domain["total_clicks"] == 4
+    assert top_domain["percentage_of_all_clicks"] == 80.0
+
+    second_domain = data["domains"][1]
+    assert second_domain["domain"] == "github.com"
+    assert second_domain["link_count"] == 1
+    assert second_domain["total_clicks"] == 1
+    assert second_domain["percentage_of_all_clicks"] == 20.0
+
+
+def test_lab12_comprehensive_observability_report():
+    """Verify GET /api/stats/report provides full system summary and CloudWatch metric points."""
+    client.post("/api/shorten", json={"url": "https://aws.amazon.com/cloudwatch/", "custom_code": "cw-link"})
+    for _ in range(4):
+        client.get("/cw-link", follow_redirects=False)
+
+    report_res = client.get("/api/stats/report")
+    assert report_res.status_code == 200
+    data = report_res.json()
+
+    assert "summary" in data
+    assert data["summary"]["total_links"] == 1
+    assert data["summary"]["total_clicks"] == 4
+    assert data["summary"]["average_clicks_per_link"] == 4.0
+    assert data["summary"]["health_status"] == "optimal"
+
+    # CloudWatch telemetry metrics verification
+    metrics = {m["metric_name"]: m["value"] for m in data["cloudwatch_telemetry_metrics"]}
+    assert metrics["TotalShortLinksStored"] == 1.0
+    assert metrics["TotalRedirectionsServed"] == 4.0
+    assert metrics["ActiveShortLinksGauge"] == 1.0
+    assert metrics["AverageClicksPerLink"] == 4.0
+
+    # Ensure domain breakdown and top links are populated
+    assert len(data["top_performing_links"]) == 1
+    assert data["top_performing_links"][0]["short_code"] == "cw-link"
+    assert len(data["domain_breakdown"]) == 1
+    assert data["domain_breakdown"][0]["domain"] == "aws.amazon.com"
+
+
+def test_lab12_link_stats_includes_destination_domain():
+    """Verify GET /api/urls/{short_code}/stats includes destination_domain."""
+    client.post("/api/shorten", json={"url": "https://fastapi.tiangolo.com/tutorial/", "custom_code": "fastapi-doc"})
+    stats = client.get("/api/urls/fastapi-doc/stats").json()
+    assert stats["destination_domain"] == "fastapi.tiangolo.com"

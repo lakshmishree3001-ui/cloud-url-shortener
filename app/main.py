@@ -9,12 +9,15 @@ Lab 8: URL Redirection (HTTP 307 Temporary Redirect)
 Lab 9: Global Exception Handling & Error Management
 Lab 10: Access Tracking & Real-Time Click Analytics
 Lab 11: URL Expiration & Time-To-Live (TTL) Management
+Lab 12: Comprehensive Analytics, Top URLs, Domain Breakdown, and CloudWatch Telemetry
 """
+from collections import defaultdict
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone, timedelta
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
+from urllib.parse import urlparse
 
-from fastapi import Depends, FastAPI, HTTPException, Request, status
+from fastapi import Depends, FastAPI, HTTPException, Query, Request, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, RedirectResponse
 from sqlalchemy import func
@@ -22,6 +25,12 @@ from sqlalchemy.orm import Session
 
 from app.database import Base, engine, get_db
 from app.models import (
+    CloudWatchMetricItem,
+    ComprehensiveReportResponse,
+    DomainAnalyticsResponse,
+    DomainStatsItem,
+    RankedURLItem,
+    TopURLsResponse,
     URLBatchRequest,
     URLBatchResponse,
     URLDatabaseRecord,
@@ -41,7 +50,7 @@ from pydantic import BaseModel, Field
 
 
 # ==========================================
-# TTL & Expiration Helpers (Lab 11)
+# Helpers: Expiration, TTL, & Domains (Lab 11 & 12)
 # ==========================================
 def is_url_expired(record: URLItem) -> bool:
     """
@@ -70,6 +79,16 @@ def get_time_remaining_seconds(record: URLItem) -> Optional[int]:
     return max(0, int(diff))
 
 
+def extract_domain(url: str) -> str:
+    """Extracts the base hostname / domain name from any URL."""
+    try:
+        parsed = urlparse(url)
+        netloc = parsed.netloc.split(":")[0].lower()
+        return netloc if netloc else "unknown"
+    except Exception:
+        return "unknown"
+
+
 # ==========================================
 # Application Lifespan (Database Initializer)
 # ==========================================
@@ -89,9 +108,9 @@ app = FastAPI(
     description=(
         "Production-ready URL Shortener simulation built with FastAPI, SQLite, "
         "and Base62 collision-resistant hashing. Designed to reflect enterprise "
-        "AWS Cloud Architecture (Route 53 -> CloudFront -> ALB -> ECS -> RDS/DynamoDB)."
+        "AWS Cloud Architecture (Route 53 -> CloudFront -> ALB -> ECS -> RDS/DynamoDB -> CloudWatch)."
     ),
-    version="1.1.0",
+    version="1.2.0",
     lifespan=lifespan,
 )
 
@@ -101,10 +120,7 @@ app = FastAPI(
 # ==========================================
 @app.exception_handler(HTTPException)
 async def http_exception_handler(request: Request, exc: HTTPException):
-    """
-    Global handler for standard HTTPExceptions.
-    Returns a consistent JSON error schema across all endpoints.
-    """
+    """Global handler for standard HTTPExceptions."""
     return JSONResponse(
         status_code=exc.status_code,
         content={
@@ -119,10 +135,7 @@ async def http_exception_handler(request: Request, exc: HTTPException):
 
 @app.exception_handler(RequestValidationError)
 async def validation_exception_handler(request: Request, exc: RequestValidationError):
-    """
-    Global handler for request body / parameter validation failures.
-    Translates Pydantic errors into human-readable 400 Bad Request responses.
-    """
+    """Global handler for request body / parameter validation failures."""
     error_messages = []
     for err in exc.errors():
         field = " -> ".join(str(loc) for loc in err.get("loc", []))
@@ -172,9 +185,10 @@ def root(db: Session = Depends(get_db)):
     return {
         "service": "Cloud-Based URL Shortener",
         "status": "online",
-        "version": "1.1.0",
+        "version": "1.2.0",
         "aws_architecture_tier": "Compute Tier (Simulated ECS Fargate / EC2)",
         "database_tier": "Storage Tier (SQLite simulating Amazon RDS)",
+        "telemetry_tier": "Observability Tier (Simulated Amazon CloudWatch)",
         "total_persisted_urls": persisted_count,
         "docs_url": "/docs",
         "redoc_url": "/redoc",
@@ -244,7 +258,7 @@ def create_and_store_url(
 ):
     now_utc = datetime.now(timezone.utc)
 
-    # 1. Calculate expiration (TTL) if requested (Lab 11)
+    # 1. Calculate expiration (TTL) if requested
     expires_at = None
     if payload.expires_in_hours is not None:
         expires_at = now_utc + timedelta(hours=payload.expires_in_hours)
@@ -256,7 +270,6 @@ def create_and_store_url(
         code = payload.custom_code
         existing = db.query(URLItem).filter(URLItem.short_code == code).first()
         if existing:
-            # Check if existing custom code is already expired
             if is_url_expired(existing):
                 existing.is_active = False
                 db.commit()
@@ -267,7 +280,6 @@ def create_and_store_url(
         code_type = "custom_alias"
     else:
         # 3. Check for duplicate long URL (Idempotent cloud design)
-        # Only reuse if no custom expiration was requested
         if payload.expires_in_hours is None and payload.expires_in_days is None:
             existing_url = db.query(URLItem).filter(
                 URLItem.original_url == payload.url,
@@ -366,7 +378,6 @@ def batch_store_urls(
         if not valid:
             continue
 
-        # Generate unique code
         code = None
         for _ in range(10):
             candidate = generate_short_code(length=6)
@@ -433,6 +444,7 @@ def retrieve_all_stored_urls(
                 "id": r.id,
                 "short_code": r.short_code,
                 "original_url": r.original_url,
+                "destination_domain": extract_domain(r.original_url),
                 "click_count": r.click_count,
                 "created_at": r.created_at.isoformat() if r.created_at else None,
                 "expires_at": r.expires_at.isoformat() if r.expires_at else None,
@@ -471,6 +483,7 @@ def retrieve_stored_url_by_code(
         "id": record.id,
         "short_code": record.short_code,
         "original_url": record.original_url,
+        "destination_domain": extract_domain(record.original_url),
         "click_count": record.click_count,
         "created_at": record.created_at.isoformat() if record.created_at else None,
         "last_accessed_at": record.last_accessed_at.isoformat() if record.last_accessed_at else None,
@@ -499,15 +512,6 @@ def redirect_to_original_url(
     short_code: str,
     db: Session = Depends(get_db),
 ):
-    """
-    Lab 8, 10 & 11: URL Redirection + Access Tracking + Expiration Check
-    1. Retrieve original URL from SQLite using indexed short_code.
-    2. Check expiration (TTL): If expired, mark is_active=False and return HTTP 410 Gone.
-    3. Check active status.
-    4. Atomically increment click_count and record last_accessed_at timestamp.
-    5. Issue HTTP 307 Temporary Redirect.
-    """
-    # Exclude system documentation paths
     if short_code in ("docs", "redoc", "openapi.json", "favicon.ico", "health"):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found.")
 
@@ -518,7 +522,7 @@ def redirect_to_original_url(
             detail=f"Short code '{short_code}' not found.",
         )
 
-    # Lab 11: Expiration check (TTL)
+    # Expiration check (TTL)
     if is_url_expired(record):
         if record.is_active:
             record.is_active = False
@@ -534,7 +538,7 @@ def redirect_to_original_url(
             detail="This short URL has been deactivated.",
         )
 
-    # Lab 10: Access Tracking
+    # Access Tracking
     record.click_count += 1
     record.last_accessed_at = datetime.now(timezone.utc)
     db.commit()
@@ -546,14 +550,14 @@ def redirect_to_original_url(
 
 
 # ==========================================
-# 9. Access Tracking & URL Statistics (GET) - Lab 10 & 11
+# 9. Access Tracking & URL Statistics (GET) - Lab 10 & 11 & 12
 # ==========================================
 @app.get(
     "/api/urls/{short_code}/stats",
     response_model=URLStatsResponse,
     tags=["Analytics & Statistics"],
     summary="Get Access Tracking, Click Statistics, and TTL Status",
-    description="Displays click count, creation date, last access timestamp, and TTL expiration for a short link.",
+    description="Displays click count, creation date, destination domain, and TTL expiration for a short link.",
 )
 def get_url_statistics(
     short_code: str,
@@ -572,6 +576,7 @@ def get_url_statistics(
     return URLStatsResponse(
         short_code=record.short_code,
         original_url=record.original_url,
+        destination_domain=extract_domain(record.original_url),
         click_count=record.click_count,
         created_at=record.created_at,
         last_accessed_at=record.last_accessed_at,
@@ -595,7 +600,7 @@ def get_url_statistics(
 def get_global_statistics(db: Session = Depends(get_db)):
     total_links = db.query(URLItem).count()
     total_clicks = db.query(func.sum(URLItem.click_count)).scalar() or 0
-    top_link = db.query(URLItem).order_by(URLItem.click_count.desc()).first()
+    top_link = db.query(URLItem).order_by(URLItem.click_count.desc(), URLItem.id.asc()).first()
 
     return {
         "total_short_links": total_links,
@@ -610,7 +615,222 @@ def get_global_statistics(db: Session = Depends(get_db)):
 
 
 # ==========================================
-# 11. TTL Maintenance & Cleanup (POST/GET) - Lab 11
+# 11. Top Performing URLs Ranking (GET) - Lab 12
+# ==========================================
+@app.get(
+    "/api/stats/top",
+    response_model=TopURLsResponse,
+    tags=["Analytics & Statistics"],
+    summary="Top-N Most Clicked Short URLs",
+    description="Returns leaderboard ranking of the highest performing links sorted by total redirections served.",
+)
+def get_top_performing_urls(
+    limit: int = Query(default=10, ge=1, le=50, description="Maximum number of ranked URLs to return"),
+    request: Request = None,
+    db: Session = Depends(get_db),
+):
+    base_url = str(request.base_url).rstrip("/") if request else "http://localhost:8000"
+    records = db.query(URLItem).order_by(URLItem.click_count.desc(), URLItem.id.asc()).limit(limit).all()
+
+    ranked = []
+    for idx, r in enumerate(records, start=1):
+        expired = is_url_expired(r)
+        status_str = "expired" if expired else ("active" if r.is_active else "inactive")
+        ranked.append(
+            RankedURLItem(
+                rank=idx,
+                short_code=r.short_code,
+                short_url=f"{base_url}/{r.short_code}",
+                original_url=r.original_url,
+                destination_domain=extract_domain(r.original_url),
+                click_count=r.click_count,
+                created_at=r.created_at.isoformat() if r.created_at else "",
+                last_accessed_at=r.last_accessed_at.isoformat() if r.last_accessed_at else None,
+                expires_at=r.expires_at.isoformat() if r.expires_at else None,
+                is_active=r.is_active and not expired,
+                is_expired=expired,
+                status=status_str,
+            )
+        )
+
+    return TopURLsResponse(
+        limit=limit,
+        returned_count=len(ranked),
+        top_links=ranked,
+    )
+
+
+# ==========================================
+# 12. Destination Domain Analytics (GET) - Lab 12
+# ==========================================
+@app.get(
+    "/api/stats/domains",
+    response_model=DomainAnalyticsResponse,
+    tags=["Analytics & Statistics"],
+    summary="Destination Domain Distribution Analytics",
+    description="Aggregates and ranks the target domains being shortened, along with their respective click shares.",
+)
+def get_domain_analytics(db: Session = Depends(get_db)):
+    records = db.query(URLItem).all()
+    domain_map = defaultdict(lambda: {"count": 0, "clicks": 0})
+    total_clicks = 0
+
+    for r in records:
+        domain = extract_domain(r.original_url)
+        domain_map[domain]["count"] += 1
+        domain_map[domain]["clicks"] += r.click_count
+        total_clicks += r.click_count
+
+    items = []
+    for domain, data in domain_map.items():
+        percentage = round((data["clicks"] / total_clicks) * 100, 2) if total_clicks > 0 else 0.0
+        items.append(
+            DomainStatsItem(
+                domain=domain,
+                link_count=data["count"],
+                total_clicks=data["clicks"],
+                percentage_of_all_clicks=percentage,
+            )
+        )
+
+    # Sort descending by clicks, then link count
+    items.sort(key=lambda x: (x.total_clicks, x.link_count), reverse=True)
+
+    return DomainAnalyticsResponse(
+        total_unique_domains=len(items),
+        total_tracked_clicks=total_clicks,
+        domains=items,
+    )
+
+
+# ==========================================
+# 13. Comprehensive Observability Report (GET) - Lab 12
+# ==========================================
+@app.get(
+    "/api/stats/report",
+    response_model=ComprehensiveReportResponse,
+    tags=["Analytics & Statistics"],
+    summary="Comprehensive Observability & Telemetry Report",
+    description=(
+        "Consolidates full system metrics, operational KPIs, domain distributions, "
+        "and simulated Amazon CloudWatch Custom Telemetry datapoints."
+    ),
+)
+def get_comprehensive_report(
+    request: Request = None,
+    db: Session = Depends(get_db),
+):
+    now_utc = datetime.now(timezone.utc)
+    base_url = str(request.base_url).rstrip("/") if request else "http://localhost:8000"
+
+    records = db.query(URLItem).all()
+    total_links = len(records)
+    total_clicks = sum(r.click_count for r in records)
+
+    active_links = 0
+    expired_links = 0
+    deactivated_links = 0
+
+    for r in records:
+        if is_url_expired(r):
+            expired_links += 1
+        elif not r.is_active:
+            deactivated_links += 1
+        else:
+            active_links += 1
+
+    avg_clicks = round(total_clicks / total_links, 2) if total_links > 0 else 0.0
+
+    # Top performing links (top 5)
+    sorted_by_clicks = sorted(records, key=lambda x: x.click_count, reverse=True)[:5]
+    top_performing = [
+        RankedURLItem(
+            rank=i + 1,
+            short_code=r.short_code,
+            short_url=f"{base_url}/{r.short_code}",
+            original_url=r.original_url,
+            destination_domain=extract_domain(r.original_url),
+            click_count=r.click_count,
+            created_at=r.created_at.isoformat() if r.created_at else "",
+            last_accessed_at=r.last_accessed_at.isoformat() if r.last_accessed_at else None,
+            expires_at=r.expires_at.isoformat() if r.expires_at else None,
+            is_active=r.is_active and not is_url_expired(r),
+            is_expired=is_url_expired(r),
+            status="expired" if is_url_expired(r) else ("active" if r.is_active else "inactive"),
+        )
+        for i, r in enumerate(sorted_by_clicks)
+    ]
+
+    # Recent links (last 5 created)
+    recent_created = db.query(URLItem).order_by(URLItem.created_at.desc()).limit(5).all()
+    recent_links = [
+        {
+            "short_code": r.short_code,
+            "original_url": r.original_url,
+            "created_at": r.created_at.isoformat() if r.created_at else None,
+            "click_count": r.click_count,
+        }
+        for r in recent_created
+    ]
+
+    # Recent accesses (last 5 clicked)
+    recent_accessed = db.query(URLItem).filter(URLItem.last_accessed_at.isnot(None)).order_by(URLItem.last_accessed_at.desc()).limit(5).all()
+    recent_accesses = [
+        {
+            "short_code": r.short_code,
+            "original_url": r.original_url,
+            "last_accessed_at": r.last_accessed_at.isoformat() if r.last_accessed_at else None,
+            "click_count": r.click_count,
+        }
+        for r in recent_accessed
+    ]
+
+    # Domain breakdown (top 5)
+    domain_map = defaultdict(lambda: {"count": 0, "clicks": 0})
+    for r in records:
+        dom = extract_domain(r.original_url)
+        domain_map[dom]["count"] += 1
+        domain_map[dom]["clicks"] += r.click_count
+
+    domain_list = []
+    for dom, dat in domain_map.items():
+        pct = round((dat["clicks"] / total_clicks) * 100, 2) if total_clicks > 0 else 0.0
+        domain_list.append(DomainStatsItem(domain=dom, link_count=dat["count"], total_clicks=dat["clicks"], percentage_of_all_clicks=pct))
+    domain_list.sort(key=lambda x: x.total_clicks, reverse=True)
+    top_domains = domain_list[:5]
+
+    # Amazon CloudWatch Custom Metrics Datapoints
+    cloudwatch_metrics = [
+        CloudWatchMetricItem(metric_name="TotalShortLinksStored", value=float(total_links), unit="Count", timestamp=now_utc.isoformat()),
+        CloudWatchMetricItem(metric_name="ActiveShortLinksGauge", value=float(active_links), unit="Count", timestamp=now_utc.isoformat()),
+        CloudWatchMetricItem(metric_name="ExpiredShortLinksCount", value=float(expired_links), unit="Count", timestamp=now_utc.isoformat()),
+        CloudWatchMetricItem(metric_name="DeactivatedLinksCount", value=float(deactivated_links), unit="Count", timestamp=now_utc.isoformat()),
+        CloudWatchMetricItem(metric_name="TotalRedirectionsServed", value=float(total_clicks), unit="Count", timestamp=now_utc.isoformat()),
+        CloudWatchMetricItem(metric_name="AverageClicksPerLink", value=float(avg_clicks), unit="Count/Instance", timestamp=now_utc.isoformat()),
+    ]
+
+    return ComprehensiveReportResponse(
+        report_timestamp=now_utc.isoformat(),
+        cloud_region="ap-south-1 (Mumbai)",
+        summary={
+            "total_links": total_links,
+            "active_links": active_links,
+            "expired_links": expired_links,
+            "deactivated_links": deactivated_links,
+            "total_clicks": total_clicks,
+            "average_clicks_per_link": avg_clicks,
+            "health_status": "optimal",
+        },
+        top_performing_links=top_performing,
+        recent_links=recent_links,
+        recent_accesses=recent_accesses,
+        domain_breakdown=top_domains,
+        cloudwatch_telemetry_metrics=cloudwatch_metrics,
+    )
+
+
+# ==========================================
+# 14. TTL Maintenance & Cleanup (POST/GET) - Lab 11
 # ==========================================
 @app.post(
     "/api/maintenance/cleanup-expired",
@@ -622,12 +842,6 @@ def get_global_statistics(db: Session = Depends(get_db)):
     ),
 )
 def cleanup_expired_urls(db: Session = Depends(get_db)):
-    """
-    Simulates automated background TTL reaper in AWS:
-    1. Scans for active links whose expiration timestamp is in the past.
-    2. Marks is_active = False.
-    3. Commits the transaction in bulk.
-    """
     records = db.query(URLItem).filter(
         URLItem.is_active == True,
         URLItem.expires_at.isnot(None),
@@ -669,6 +883,7 @@ def list_expired_urls(db: Session = Depends(get_db)):
             {
                 "short_code": r.short_code,
                 "original_url": r.original_url,
+                "destination_domain": extract_domain(r.original_url),
                 "expires_at": r.expires_at.isoformat() if r.expires_at else None,
                 "is_active": r.is_active,
             }

@@ -5,9 +5,11 @@ Lab 5: Short Code Generation and Batch Schemas
 Lab 6: SQLAlchemy URLItem ORM Table Model
 Lab 10: Access Tracking and Click Statistics Schemas
 Lab 11: URL Expiration and TTL Schemas
+Lab 12: Comprehensive Analytics, Top URLs, Domain Breakdown, and CloudWatch Telemetry Schemas
 """
 from datetime import datetime, timezone
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
+from urllib.parse import urlparse
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 from sqlalchemy import Boolean, Column, DateTime, Integer, String
@@ -195,6 +197,7 @@ class URLStatsResponse(BaseModel):
     """Schema representing URL access tracking and click statistics (Lab 10 & 11)."""
     short_code: str
     original_url: str
+    destination_domain: Optional[str] = None
     click_count: int
     created_at: datetime
     last_accessed_at: Optional[datetime] = None
@@ -205,3 +208,65 @@ class URLStatsResponse(BaseModel):
     status: str = "active"
 
     model_config = {"from_attributes": True}
+
+
+# ==========================================
+# Lab 12: Comprehensive Analytics Schemas
+# ==========================================
+class RankedURLItem(BaseModel):
+    """Schema representing a single ranked URL in top-performing analytics."""
+    rank: int
+    short_code: str
+    short_url: str
+    original_url: str
+    destination_domain: str
+    click_count: int
+    created_at: str
+    last_accessed_at: Optional[str] = None
+    expires_at: Optional[str] = None
+    is_active: bool
+    is_expired: bool
+    status: str
+
+
+class TopURLsResponse(BaseModel):
+    """Schema for top-N most clicked URLs ranking."""
+    limit: int
+    returned_count: int
+    top_links: List[RankedURLItem]
+
+
+class DomainStatsItem(BaseModel):
+    """Schema representing aggregated metrics for a single destination domain."""
+    domain: str
+    link_count: int
+    total_clicks: int
+    percentage_of_all_clicks: float
+
+
+class DomainAnalyticsResponse(BaseModel):
+    """Schema for destination domain distribution analytics."""
+    total_unique_domains: int
+    total_tracked_clicks: int
+    domains: List[DomainStatsItem]
+
+
+class CloudWatchMetricItem(BaseModel):
+    """Schema representing a simulated Amazon CloudWatch Custom Metric datapoint."""
+    metric_name: str
+    namespace: str = "AWS/URLShortener"
+    value: float
+    unit: str
+    timestamp: str
+
+
+class ComprehensiveReportResponse(BaseModel):
+    """Schema for complete enterprise observability & analytics report."""
+    report_timestamp: str
+    cloud_region: str
+    summary: Dict[str, Any]
+    top_performing_links: List[RankedURLItem]
+    recent_links: List[Dict[str, Any]]
+    recent_accesses: List[Dict[str, Any]]
+    domain_breakdown: List[DomainStatsItem]
+    cloudwatch_telemetry_metrics: List[CloudWatchMetricItem]
