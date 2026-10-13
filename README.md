@@ -41,4 +41,4 @@ cloud-url-shortener/
 - [x] **Lab 12**: Analytics & Statistics API
 - [x] **Lab 13**: Docker Containerization
 - [x] **Lab 14**: Testing, Validation & Documentation
-- [ ] **Lab 15**: Cloud Architecture Mapping & AWS Deployment
+- [x] **Lab 15**: Cloud Architecture Mapping & AWS Deployment

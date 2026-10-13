@@ -10,6 +10,9 @@ Lab 9: Global Exception Handling & Error Management
 Lab 10: Access Tracking & Real-Time Click Analytics
 Lab 11: URL Expiration & Time-To-Live (TTL) Management
 Lab 12: Comprehensive Analytics, Top URLs, Domain Breakdown, and CloudWatch Telemetry
+Lab 13: Docker Containerization
+Lab 14: Comprehensive Testing, Validation & Documentation
+Lab 15: Cloud Architecture Mapping & Production Wrap-Up (Version 2.0.0)
 """
 from collections import defaultdict
 from contextlib import asynccontextmanager
@@ -110,7 +113,7 @@ app = FastAPI(
         "and Base62 collision-resistant hashing. Designed to reflect enterprise "
         "AWS Cloud Architecture (Route 53 -> CloudFront -> ALB -> ECS -> RDS/DynamoDB -> CloudWatch)."
     ),
-    version="1.2.0",
+    version="2.0.0",
     lifespan=lifespan,
 )
 
@@ -185,9 +188,11 @@ def root(db: Session = Depends(get_db)):
     return {
         "service": "Cloud-Based URL Shortener",
         "status": "online",
-        "version": "1.2.0",
+        "version": "2.0.0",
+        "curriculum_progress": "15/15 Labs Completed (100%)",
+        "deployment_status": "production_ready",
         "aws_architecture_tier": "Compute Tier (Simulated ECS Fargate / EC2)",
-        "database_tier": "Storage Tier (SQLite simulating Amazon RDS)",
+        "database_tier": "Storage Tier (SQLite simulating Amazon RDS / DynamoDB)",
         "telemetry_tier": "Observability Tier (Simulated Amazon CloudWatch)",
         "total_persisted_urls": persisted_count,
         "docs_url": "/docs",
@@ -693,7 +698,6 @@ def get_domain_analytics(db: Session = Depends(get_db)):
             )
         )
 
-    # Sort descending by clicks, then link count
     items.sort(key=lambda x: (x.total_clicks, x.link_count), reverse=True)
 
     return DomainAnalyticsResponse(
@@ -741,7 +745,6 @@ def get_comprehensive_report(
 
     avg_clicks = round(total_clicks / total_links, 2) if total_links > 0 else 0.0
 
-    # Top performing links (top 5)
     sorted_by_clicks = sorted(records, key=lambda x: x.click_count, reverse=True)[:5]
     top_performing = [
         RankedURLItem(
@@ -761,7 +764,6 @@ def get_comprehensive_report(
         for i, r in enumerate(sorted_by_clicks)
     ]
 
-    # Recent links (last 5 created)
     recent_created = db.query(URLItem).order_by(URLItem.created_at.desc()).limit(5).all()
     recent_links = [
         {
@@ -773,7 +775,6 @@ def get_comprehensive_report(
         for r in recent_created
     ]
 
-    # Recent accesses (last 5 clicked)
     recent_accessed = db.query(URLItem).filter(URLItem.last_accessed_at.isnot(None)).order_by(URLItem.last_accessed_at.desc()).limit(5).all()
     recent_accesses = [
         {
@@ -785,7 +786,6 @@ def get_comprehensive_report(
         for r in recent_accessed
     ]
 
-    # Domain breakdown (top 5)
     domain_map = defaultdict(lambda: {"count": 0, "clicks": 0})
     for r in records:
         dom = extract_domain(r.original_url)
@@ -799,7 +799,6 @@ def get_comprehensive_report(
     domain_list.sort(key=lambda x: x.total_clicks, reverse=True)
     top_domains = domain_list[:5]
 
-    # Amazon CloudWatch Custom Metrics Datapoints
     cloudwatch_metrics = [
         CloudWatchMetricItem(metric_name="TotalShortLinksStored", value=float(total_links), unit="Count", timestamp=now_utc.isoformat()),
         CloudWatchMetricItem(metric_name="ActiveShortLinksGauge", value=float(active_links), unit="Count", timestamp=now_utc.isoformat()),

@@ -3,7 +3,7 @@
   "info": {
     "title": "Cloud-Based URL Shortener",
     "description": "Production-ready URL Shortener simulation built with FastAPI, SQLite, and Base62 collision-resistant hashing. Designed to reflect enterprise AWS Cloud Architecture (Route 53 -> CloudFront -> ALB -> ECS -> RDS/DynamoDB -> CloudWatch).",
-    "version": "1.2.0"
+    "version": "2.0.0"
   },
   "paths": {
     "/": {
