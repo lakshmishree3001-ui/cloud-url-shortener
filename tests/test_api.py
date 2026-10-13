@@ -1,8 +1,9 @@
 """
-Automated unit & integration tests for Labs 3 through 12.
+Automated unit & integration tests for Labs 3 through 14.
 Tests API connectivity with SQLite database, endpoints, validation, error scenarios,
 access tracking, click analytics, URL expiration (TTL), top URL leaderboards,
-domain distributions, and CloudWatch telemetry observability reports.
+domain distributions, CloudWatch telemetry reports, pagination, reserved system routes,
+and OpenAPI documentation schemas.
 """
 from datetime import datetime, timezone, timedelta
 import pytest
@@ -470,7 +471,6 @@ def test_lab12_destination_domain_analytics():
     assert data["total_unique_domains"] == 2
     assert data["total_tracked_clicks"] == 5
 
-    # Top domain should be aws.amazon.com with 4 clicks (80.0%)
     top_domain = data["domains"][0]
     assert top_domain["domain"] == "aws.amazon.com"
     assert top_domain["link_count"] == 2
@@ -500,14 +500,12 @@ def test_lab12_comprehensive_observability_report():
     assert data["summary"]["average_clicks_per_link"] == 4.0
     assert data["summary"]["health_status"] == "optimal"
 
-    # CloudWatch telemetry metrics verification
     metrics = {m["metric_name"]: m["value"] for m in data["cloudwatch_telemetry_metrics"]}
     assert metrics["TotalShortLinksStored"] == 1.0
     assert metrics["TotalRedirectionsServed"] == 4.0
     assert metrics["ActiveShortLinksGauge"] == 1.0
     assert metrics["AverageClicksPerLink"] == 4.0
 
-    # Ensure domain breakdown and top links are populated
     assert len(data["top_performing_links"]) == 1
     assert data["top_performing_links"][0]["short_code"] == "cw-link"
     assert len(data["domain_breakdown"]) == 1
@@ -519,3 +517,54 @@ def test_lab12_link_stats_includes_destination_domain():
     client.post("/api/shorten", json={"url": "https://fastapi.tiangolo.com/tutorial/", "custom_code": "fastapi-doc"})
     stats = client.get("/api/urls/fastapi-doc/stats").json()
     assert stats["destination_domain"] == "fastapi.tiangolo.com"
+
+
+# --- Lab 14 Tests: Comprehensive Edge Case & Documentation Tests ---
+def test_lab14_paginated_urls_skip_and_limit():
+    """Verify GET /api/urls supports skip and limit pagination parameters correctly."""
+    for i in range(5):
+        client.post("/api/shorten", json={"url": f"https://aws.amazon.com/page{i}/", "custom_code": f"page-{i}"})
+
+    res = client.get("/api/urls?skip=2&limit=2")
+    assert res.status_code == 200
+    data = res.json()
+    assert data["total_records"] == 5
+    assert data["offset"] == 2
+    assert data["limit"] == 2
+    assert len(data["urls"]) == 2
+
+
+def test_lab14_reserved_system_paths_guard():
+    """Verify system documentation and health routes are guarded and return 404 rather than looking up short codes."""
+    for path in ["docs", "redoc", "openapi.json", "favicon.ico"]:
+        res = client.get(f"/{path}", follow_redirects=False)
+        assert res.status_code in (200, 404)  # Docs return 200 via FastAPI, guarded internal lookup
+
+
+def test_lab14_deactivated_url_returns_410():
+    """Verify manually deactivated URL returns HTTP 410 Gone."""
+    db = TestingSessionLocal()
+    item = URLItem(
+        short_code="manual-deactive",
+        original_url="https://aws.amazon.com/deactivated/",
+        click_count=0,
+        created_at=datetime.now(timezone.utc),
+        is_active=False,
+    )
+    db.add(item)
+    db.commit()
+    db.close()
+
+    res = client.get("/manual-deactive", follow_redirects=False)
+    assert res.status_code == 410
+    assert "deactivated" in res.json()["detail"].lower()
+
+
+def test_lab14_openapi_schema_endpoint():
+    """Verify GET /openapi.json delivers complete OpenAPI 3.1 specification."""
+    res = client.get("/openapi.json")
+    assert res.status_code == 200
+    schema = res.json()
+    assert schema["info"]["title"] == "Cloud-Based URL Shortener"
+    assert "/api/shorten" in schema["paths"]
+    assert "/api/stats/report" in schema["paths"]

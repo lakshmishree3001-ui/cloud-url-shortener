@@ -1,0 +1,1164 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Cloud-Based URL Shortener",
+    "description": "Production-ready URL Shortener simulation built with FastAPI, SQLite, and Base62 collision-resistant hashing. Designed to reflect enterprise AWS Cloud Architecture (Route 53 -> CloudFront -> ALB -> ECS -> RDS/DynamoDB -> CloudWatch).",
+    "version": "1.2.0"
+  },
+  "paths": {
+    "/": {
+      "get": {
+        "tags": [
+          "Core"
+        ],
+        "summary": "Service Welcome and Cloud Metadata",
+        "description": "Returns welcome message, cloud architecture mapping, and service status.",
+        "operationId": "root__get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/health": {
+      "get": {
+        "tags": [
+          "Monitoring"
+        ],
+        "summary": "Application & Database Health Check",
+        "description": "Used by Cloud Load Balancers (like AWS ALB) to monitor container and database connection health.",
+        "operationId": "health_check_health_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/echo": {
+      "post": {
+        "tags": [
+          "Testing"
+        ],
+        "summary": "Echo Test Endpoint",
+        "description": "Accepts a JSON payload via HTTP POST and returns an enriched response with server timestamp.",
+        "operationId": "echo_payload_api_echo_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EchoRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EchoResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/shorten": {
+      "post": {
+        "tags": [
+          "URL Shortener"
+        ],
+        "summary": "Shorten and Store URL in SQLite with Optional Expiration",
+        "description": "Validates long URL, supports optional custom vanity alias and expiration (TTL), and persists the record into the database.",
+        "operationId": "create_and_store_url_api_shorten_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/URLShortenRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/URLShortenResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/shorten/batch": {
+      "post": {
+        "tags": [
+          "URL Shortener"
+        ],
+        "summary": "Batch Shorten and Store Multiple URLs with Optional TTL",
+        "description": "Processes and saves multiple URLs into SQLite in a single atomic database transaction.",
+        "operationId": "batch_store_urls_api_shorten_batch_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/URLBatchRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/URLBatchResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/urls": {
+      "get": {
+        "tags": [
+          "URL Shortener"
+        ],
+        "summary": "Retrieve All Stored URLs from SQLite",
+        "description": "Queries and returns all persistent URL records from the SQLite database with expiration status.",
+        "operationId": "retrieve_all_stored_urls_api_urls_get",
+        "parameters": [
+          {
+            "name": "skip",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "default": 0,
+              "title": "Skip"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "default": 100,
+              "title": "Limit"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/urls/{short_code}": {
+      "get": {
+        "tags": [
+          "URL Shortener"
+        ],
+        "summary": "Retrieve Stored URL Record by Short Code",
+        "description": "Queries SQLite for a specific short code and returns its full metadata and TTL status.",
+        "operationId": "retrieve_stored_url_by_code_api_urls__short_code__get",
+        "parameters": [
+          {
+            "name": "short_code",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Short Code"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/{short_code}": {
+      "get": {
+        "tags": [
+          "URL Redirection"
+        ],
+        "summary": "Redirect Short Code to Original Website",
+        "description": "Looks up the short code in SQLite, validates expiration (TTL), increments access counters, and issues an HTTP 307 Temporary Redirect.",
+        "operationId": "redirect_to_original_url__short_code__get",
+        "parameters": [
+          {
+            "name": "short_code",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Short Code"
+            }
+          }
+        ],
+        "responses": {
+          "307": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/urls/{short_code}/stats": {
+      "get": {
+        "tags": [
+          "Analytics & Statistics"
+        ],
+        "summary": "Get Access Tracking, Click Statistics, and TTL Status",
+        "description": "Displays click count, creation date, destination domain, and TTL expiration for a short link.",
+        "operationId": "get_url_statistics_api_urls__short_code__stats_get",
+        "parameters": [
+          {
+            "name": "short_code",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Short Code"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/URLStatsResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/stats/summary": {
+      "get": {
+        "tags": [
+          "Analytics & Statistics"
+        ],
+        "summary": "Service-Wide Analytics Summary",
+        "description": "Displays total links stored, total clicks across all links, and the most clicked link.",
+        "operationId": "get_global_statistics_api_stats_summary_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/stats/top": {
+      "get": {
+        "tags": [
+          "Analytics & Statistics"
+        ],
+        "summary": "Top-N Most Clicked Short URLs",
+        "description": "Returns leaderboard ranking of the highest performing links sorted by total redirections served.",
+        "operationId": "get_top_performing_urls_api_stats_top_get",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 50,
+              "minimum": 1,
+              "description": "Maximum number of ranked URLs to return",
+              "default": 10,
+              "title": "Limit"
+            },
+            "description": "Maximum number of ranked URLs to return"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TopURLsResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/stats/domains": {
+      "get": {
+        "tags": [
+          "Analytics & Statistics"
+        ],
+        "summary": "Destination Domain Distribution Analytics",
+        "description": "Aggregates and ranks the target domains being shortened, along with their respective click shares.",
+        "operationId": "get_domain_analytics_api_stats_domains_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DomainAnalyticsResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/stats/report": {
+      "get": {
+        "tags": [
+          "Analytics & Statistics"
+        ],
+        "summary": "Comprehensive Observability & Telemetry Report",
+        "description": "Consolidates full system metrics, operational KPIs, domain distributions, and simulated Amazon CloudWatch Custom Telemetry datapoints.",
+        "operationId": "get_comprehensive_report_api_stats_report_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ComprehensiveReportResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/maintenance/cleanup-expired": {
+      "post": {
+        "tags": [
+          "Maintenance & TTL"
+        ],
+        "summary": "Trigger Automated TTL Maintenance Cleanup",
+        "description": "Simulates an AWS Lambda scheduled worker (triggered by Amazon EventBridge / CloudWatch) that scans the database and deactivates expired links.",
+        "operationId": "cleanup_expired_urls_api_maintenance_cleanup_expired_post",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/urls/status/expired": {
+      "get": {
+        "tags": [
+          "Maintenance & TTL"
+        ],
+        "summary": "List All Expired URLs",
+        "description": "Queries all URLs that have passed their expiration timestamp.",
+        "operationId": "list_expired_urls_api_urls_status_expired_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "CloudWatchMetricItem": {
+        "properties": {
+          "metric_name": {
+            "type": "string",
+            "title": "Metric Name"
+          },
+          "namespace": {
+            "type": "string",
+            "title": "Namespace",
+            "default": "AWS/URLShortener"
+          },
+          "value": {
+            "type": "number",
+            "title": "Value"
+          },
+          "unit": {
+            "type": "string",
+            "title": "Unit"
+          },
+          "timestamp": {
+            "type": "string",
+            "title": "Timestamp"
+          }
+        },
+        "type": "object",
+        "required": [
+          "metric_name",
+          "value",
+          "unit",
+          "timestamp"
+        ],
+        "title": "CloudWatchMetricItem",
+        "description": "Schema representing a simulated Amazon CloudWatch Custom Metric datapoint."
+      },
+      "ComprehensiveReportResponse": {
+        "properties": {
+          "report_timestamp": {
+            "type": "string",
+            "title": "Report Timestamp"
+          },
+          "cloud_region": {
+            "type": "string",
+            "title": "Cloud Region"
+          },
+          "summary": {
+            "type": "object",
+            "title": "Summary"
+          },
+          "top_performing_links": {
+            "items": {
+              "$ref": "#/components/schemas/RankedURLItem"
+            },
+            "type": "array",
+            "title": "Top Performing Links"
+          },
+          "recent_links": {
+            "items": {
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Recent Links"
+          },
+          "recent_accesses": {
+            "items": {
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Recent Accesses"
+          },
+          "domain_breakdown": {
+            "items": {
+              "$ref": "#/components/schemas/DomainStatsItem"
+            },
+            "type": "array",
+            "title": "Domain Breakdown"
+          },
+          "cloudwatch_telemetry_metrics": {
+            "items": {
+              "$ref": "#/components/schemas/CloudWatchMetricItem"
+            },
+            "type": "array",
+            "title": "Cloudwatch Telemetry Metrics"
+          }
+        },
+        "type": "object",
+        "required": [
+          "report_timestamp",
+          "cloud_region",
+          "summary",
+          "top_performing_links",
+          "recent_links",
+          "recent_accesses",
+          "domain_breakdown",
+          "cloudwatch_telemetry_metrics"
+        ],
+        "title": "ComprehensiveReportResponse",
+        "description": "Schema for complete enterprise observability & analytics report."
+      },
+      "DomainAnalyticsResponse": {
+        "properties": {
+          "total_unique_domains": {
+            "type": "integer",
+            "title": "Total Unique Domains"
+          },
+          "total_tracked_clicks": {
+            "type": "integer",
+            "title": "Total Tracked Clicks"
+          },
+          "domains": {
+            "items": {
+              "$ref": "#/components/schemas/DomainStatsItem"
+            },
+            "type": "array",
+            "title": "Domains"
+          }
+        },
+        "type": "object",
+        "required": [
+          "total_unique_domains",
+          "total_tracked_clicks",
+          "domains"
+        ],
+        "title": "DomainAnalyticsResponse",
+        "description": "Schema for destination domain distribution analytics."
+      },
+      "DomainStatsItem": {
+        "properties": {
+          "domain": {
+            "type": "string",
+            "title": "Domain"
+          },
+          "link_count": {
+            "type": "integer",
+            "title": "Link Count"
+          },
+          "total_clicks": {
+            "type": "integer",
+            "title": "Total Clicks"
+          },
+          "percentage_of_all_clicks": {
+            "type": "number",
+            "title": "Percentage Of All Clicks"
+          }
+        },
+        "type": "object",
+        "required": [
+          "domain",
+          "link_count",
+          "total_clicks",
+          "percentage_of_all_clicks"
+        ],
+        "title": "DomainStatsItem",
+        "description": "Schema representing aggregated metrics for a single destination domain."
+      },
+      "EchoRequest": {
+        "properties": {
+          "message": {
+            "type": "string",
+            "maxLength": 500,
+            "minLength": 1,
+            "title": "Message",
+            "description": "Message to be echoed"
+          },
+          "client_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Client Name",
+            "description": "Identifier of the caller",
+            "default": "Anonymous"
+          }
+        },
+        "type": "object",
+        "required": [
+          "message"
+        ],
+        "title": "EchoRequest"
+      },
+      "EchoResponse": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "received_message": {
+            "type": "string",
+            "title": "Received Message"
+          },
+          "client_name": {
+            "type": "string",
+            "title": "Client Name"
+          },
+          "timestamp": {
+            "type": "string",
+            "title": "Timestamp"
+          },
+          "cloud_region_simulation": {
+            "type": "string",
+            "title": "Cloud Region Simulation"
+          }
+        },
+        "type": "object",
+        "required": [
+          "status",
+          "received_message",
+          "client_name",
+          "timestamp",
+          "cloud_region_simulation"
+        ],
+        "title": "EchoResponse"
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "type": "array",
+            "title": "Detail"
+          }
+        },
+        "type": "object",
+        "title": "HTTPValidationError"
+      },
+      "RankedURLItem": {
+        "properties": {
+          "rank": {
+            "type": "integer",
+            "title": "Rank"
+          },
+          "short_code": {
+            "type": "string",
+            "title": "Short Code"
+          },
+          "short_url": {
+            "type": "string",
+            "title": "Short Url"
+          },
+          "original_url": {
+            "type": "string",
+            "title": "Original Url"
+          },
+          "destination_domain": {
+            "type": "string",
+            "title": "Destination Domain"
+          },
+          "click_count": {
+            "type": "integer",
+            "title": "Click Count"
+          },
+          "created_at": {
+            "type": "string",
+            "title": "Created At"
+          },
+          "last_accessed_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Accessed At"
+          },
+          "expires_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expires At"
+          },
+          "is_active": {
+            "type": "boolean",
+            "title": "Is Active"
+          },
+          "is_expired": {
+            "type": "boolean",
+            "title": "Is Expired"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          }
+        },
+        "type": "object",
+        "required": [
+          "rank",
+          "short_code",
+          "short_url",
+          "original_url",
+          "destination_domain",
+          "click_count",
+          "created_at",
+          "is_active",
+          "is_expired",
+          "status"
+        ],
+        "title": "RankedURLItem",
+        "description": "Schema representing a single ranked URL in top-performing analytics."
+      },
+      "TopURLsResponse": {
+        "properties": {
+          "limit": {
+            "type": "integer",
+            "title": "Limit"
+          },
+          "returned_count": {
+            "type": "integer",
+            "title": "Returned Count"
+          },
+          "top_links": {
+            "items": {
+              "$ref": "#/components/schemas/RankedURLItem"
+            },
+            "type": "array",
+            "title": "Top Links"
+          }
+        },
+        "type": "object",
+        "required": [
+          "limit",
+          "returned_count",
+          "top_links"
+        ],
+        "title": "TopURLsResponse",
+        "description": "Schema for top-N most clicked URLs ranking."
+      },
+      "URLBatchRequest": {
+        "properties": {
+          "urls": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "maxItems": 50,
+            "minItems": 1,
+            "title": "Urls",
+            "description": "List of long URLs to shorten simultaneously",
+            "examples": [
+              [
+                "https://aws.amazon.com/ec2/",
+                "https://aws.amazon.com/s3/",
+                "https://aws.amazon.com/dynamodb/"
+              ]
+            ]
+          },
+          "expires_in_hours": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 8760.0,
+                "minimum": 1.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expires In Hours",
+            "description": "Optional expiration in hours for all URLs in the batch"
+          },
+          "expires_in_days": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 365.0,
+                "minimum": 1.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expires In Days",
+            "description": "Optional expiration in days for all URLs in the batch"
+          }
+        },
+        "type": "object",
+        "required": [
+          "urls"
+        ],
+        "title": "URLBatchRequest",
+        "description": "Request schema for batch shortening multiple URLs with optional expiration."
+      },
+      "URLBatchResponse": {
+        "properties": {
+          "total_requested": {
+            "type": "integer",
+            "title": "Total Requested"
+          },
+          "successful_count": {
+            "type": "integer",
+            "title": "Successful Count"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/URLShortenResponse"
+            },
+            "type": "array",
+            "title": "Items"
+          }
+        },
+        "type": "object",
+        "required": [
+          "total_requested",
+          "successful_count",
+          "items"
+        ],
+        "title": "URLBatchResponse",
+        "description": "Response returned for batch URL shortening."
+      },
+      "URLShortenRequest": {
+        "properties": {
+          "url": {
+            "type": "string",
+            "title": "Url",
+            "description": "Target destination URL to shorten",
+            "examples": [
+              "https://aws.amazon.com/blogs/aws/"
+            ]
+          },
+          "custom_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Custom Code",
+            "description": "Optional custom vanity code (4-16 alphanumeric characters)",
+            "examples": [
+              "aws-blog"
+            ]
+          },
+          "expires_in_hours": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 8760.0,
+                "minimum": 1.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expires In Hours",
+            "description": "Optional expiration in hours (1 to 8760 hours, e.g., 24 for 1 day)",
+            "examples": [
+              24
+            ]
+          },
+          "expires_in_days": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 365.0,
+                "minimum": 1.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expires In Days",
+            "description": "Optional expiration in days (1 to 365 days)",
+            "examples": [
+              7
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "url"
+        ],
+        "title": "URLShortenRequest",
+        "description": "Request schema for shortening a URL with optional custom alias and expiration (TTL)."
+      },
+      "URLShortenResponse": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "title": "Status",
+            "default": "success"
+          },
+          "short_code": {
+            "type": "string",
+            "title": "Short Code"
+          },
+          "short_url": {
+            "type": "string",
+            "title": "Short Url"
+          },
+          "original_url": {
+            "type": "string",
+            "title": "Original Url"
+          },
+          "created_at": {
+            "type": "string",
+            "title": "Created At"
+          },
+          "expires_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expires At"
+          },
+          "code_type": {
+            "type": "string",
+            "title": "Code Type",
+            "default": "random_base62"
+          }
+        },
+        "type": "object",
+        "required": [
+          "short_code",
+          "short_url",
+          "original_url",
+          "created_at"
+        ],
+        "title": "URLShortenResponse",
+        "description": "Response containing the generated short code, full short URL, and expiration."
+      },
+      "URLStatsResponse": {
+        "properties": {
+          "short_code": {
+            "type": "string",
+            "title": "Short Code"
+          },
+          "original_url": {
+            "type": "string",
+            "title": "Original Url"
+          },
+          "destination_domain": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Destination Domain"
+          },
+          "click_count": {
+            "type": "integer",
+            "title": "Click Count"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "last_accessed_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Accessed At"
+          },
+          "expires_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expires At"
+          },
+          "is_active": {
+            "type": "boolean",
+            "title": "Is Active"
+          },
+          "is_expired": {
+            "type": "boolean",
+            "title": "Is Expired",
+            "default": false
+          },
+          "time_remaining_seconds": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Time Remaining Seconds"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status",
+            "default": "active"
+          }
+        },
+        "type": "object",
+        "required": [
+          "short_code",
+          "original_url",
+          "click_count",
+          "created_at",
+          "is_active"
+        ],
+        "title": "URLStatsResponse",
+        "description": "Schema representing URL access tracking and click statistics (Lab 10 & 11)."
+      },
+      "ValidationError": {
+        "properties": {
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "type": "array",
+            "title": "Location"
+          },
+          "msg": {
+            "type": "string",
+            "title": "Message"
+          },
+          "type": {
+            "type": "string",
+            "title": "Error Type"
+          }
+        },
+        "type": "object",
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError"
+      }
+    }
+  }
+}
