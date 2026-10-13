@@ -14,6 +14,7 @@ Lab 13: Docker Containerization
 Lab 14: Comprehensive Testing, Validation & Documentation
 Lab 15: Cloud Architecture Mapping & Production Wrap-Up (Version 2.0.0)
 """
+import os
 from collections import defaultdict
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone, timedelta
@@ -22,7 +23,8 @@ from urllib.parse import urlparse
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, status
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse, RedirectResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
+from fastapi.staticfiles import StaticFiles
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
@@ -117,6 +119,11 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+# Mount static asset directory for web dashboard
+STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
+if os.path.exists(STATIC_DIR):
+    app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+
 
 # ==========================================
 # Global Exception Handlers (Lab 9)
@@ -180,10 +187,16 @@ class EchoResponse(BaseModel):
     "/",
     tags=["Core"],
     summary="Service Welcome and Cloud Metadata",
-    description="Returns welcome message, cloud architecture mapping, and service status.",
+    description="Returns welcome message, cloud architecture mapping, and service status, or serves dashboard to web browsers.",
     status_code=status.HTTP_200_OK,
 )
-def root(db: Session = Depends(get_db)):
+def root(request: Request, db: Session = Depends(get_db)):
+    accept = request.headers.get("accept", "")
+    index_file = os.path.join(os.path.dirname(__file__), "static", "index.html")
+    # If accessed directly from a browser expecting HTML, serve the frontend SPA
+    if "text/html" in accept and not accept.startswith("*/*") and os.path.exists(index_file):
+        return FileResponse(index_file)
+
     persisted_count = db.query(URLItem).count()
     return {
         "service": "Cloud-Based URL Shortener",
@@ -198,6 +211,25 @@ def root(db: Session = Depends(get_db)):
         "docs_url": "/docs",
         "redoc_url": "/redoc",
     }
+
+
+@app.get(
+    "/dashboard",
+    tags=["Frontend Dashboard"],
+    summary="Serve Enterprise Web Dashboard",
+    include_in_schema=False,
+)
+@app.get(
+    "/app",
+    tags=["Frontend Dashboard"],
+    summary="Serve Enterprise Web Dashboard",
+    include_in_schema=False,
+)
+def serve_dashboard():
+    index_file = os.path.join(os.path.dirname(__file__), "static", "index.html")
+    if os.path.exists(index_file):
+        return FileResponse(index_file)
+    raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Static dashboard not found.")
 
 
 # ==========================================
@@ -517,7 +549,7 @@ def redirect_to_original_url(
     short_code: str,
     db: Session = Depends(get_db),
 ):
-    if short_code in ("docs", "redoc", "openapi.json", "favicon.ico", "health"):
+    if short_code in ("docs", "redoc", "openapi.json", "favicon.ico", "health", "app", "dashboard", "static"):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found.")
 
     record = db.query(URLItem).filter(URLItem.short_code == short_code).first()

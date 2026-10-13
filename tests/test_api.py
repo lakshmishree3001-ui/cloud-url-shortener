@@ -568,3 +568,45 @@ def test_lab14_openapi_schema_endpoint():
     assert schema["info"]["title"] == "Cloud-Based URL Shortener"
     assert "/api/shorten" in schema["paths"]
     assert "/api/stats/report" in schema["paths"]
+
+
+# --- Frontend Web Application Tests ---
+def test_frontend_dashboard_endpoint():
+    """Verify GET /dashboard delivers production HTML dashboard."""
+    res = client.get("/dashboard")
+    assert res.status_code == 200
+    assert "text/html" in res.headers.get("content-type", "")
+    assert "Cloud URL Shortener" in res.text
+    assert "Cloud-Native URL Infrastructure" in res.text
+
+
+def test_frontend_app_endpoint():
+    """Verify GET /app routes to the single-page dashboard."""
+    res = client.get("/app")
+    assert res.status_code == 200
+    assert "text/html" in res.headers.get("content-type", "")
+
+
+def test_frontend_root_browser_content_negotiation():
+    """Verify GET / delivers HTML to browsers and JSON to API clients."""
+    # Browser client requesting HTML
+    browser_res = client.get("/", headers={"Accept": "text/html,application/xhtml+xml"})
+    assert browser_res.status_code == 200
+    assert "text/html" in browser_res.headers.get("content-type", "")
+
+    # Programmatic API client requesting JSON
+    api_res = client.get("/", headers={"Accept": "application/json"})
+    assert api_res.status_code == 200
+    assert api_res.json()["service"] == "Cloud-Based URL Shortener"
+
+
+def test_frontend_static_assets_served():
+    """Verify /static/style.css and /static/app.js are served properly."""
+    css_res = client.get("/static/style.css")
+    assert css_res.status_code == 200
+    assert "Obsidian" in css_res.text or "font-family" in css_res.text
+
+    js_res = client.get("/static/app.js")
+    assert js_res.status_code == 200
+    assert "DOMContentLoaded" in js_res.text
+
