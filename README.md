@@ -35,7 +35,7 @@ cloud-url-shortener/
 - [x] **Lab 6**: SQLite Database Design
 - [x] **Lab 7**: Store URLs Through API
 - [x] **Lab 8**: URL Redirection Implementation
-- [ ] **Lab 9**: Comprehensive Error Handling
+- [x] **Lab 9**: Comprehensive Error Handling
 - [ ] **Lab 10**: Access Tracking & Click Analytics
 - [ ] **Lab 11**: URL Expiration & Time-To-Live (TTL)
 - [ ] **Lab 12**: Analytics & Statistics API

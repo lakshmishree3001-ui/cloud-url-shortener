@@ -11,7 +11,8 @@ from typing import List, Optional
 from urllib.parse import urlparse
 
 from fastapi import Depends, FastAPI, HTTPException, Request, status
-from fastapi.responses import RedirectResponse
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse, RedirectResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
@@ -50,6 +51,49 @@ app = FastAPI(
     redoc_url="/redoc",
     lifespan=lifespan,
 )
+
+
+# ==========================================
+# Lab 9: Centralized Global Error Handlers
+# ==========================================
+@app.exception_handler(HTTPException)
+async def custom_http_exception_handler(request: Request, exc: HTTPException):
+    """Formats all standard HTTP exceptions into uniform cloud JSON error format."""
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={
+            "error": True,
+            "status_code": exc.status_code,
+            "detail": exc.detail,
+            "path": request.url.path,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        },
+    )
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    """
+    Catches invalid URLs, empty strings, and malformed payload bodies.
+    Returns clean 400 Bad Request error details.
+    """
+    messages = []
+    for err in exc.errors():
+        msg = err.get("msg", "Validation error")
+        if msg.startswith("Value error, "):
+            msg = msg[len("Value error, "):]
+        messages.append(msg)
+
+    return JSONResponse(
+        status_code=status.HTTP_400_BAD_REQUEST,
+        content={
+            "error": True,
+            "status_code": status.HTTP_400_BAD_REQUEST,
+            "detail": "; ".join(messages) if messages else "Invalid or empty input provided.",
+            "path": request.url.path,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        },
+    )
 
 
 # Pydantic Schemas for Lab 3 Echo endpoints
@@ -160,11 +204,27 @@ def create_and_store_url(
         if existing:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
-                detail=f"Custom short code '{code}' is already taken in database. Please choose another.",
+                detail=f"Custom short code '{code}' is already in use. Please select a different vanity alias.",
             )
         code_type = "custom_alias"
     else:
-        # 2. Generate collision-resistant Base62 code
+        # 2. Check for duplicate long URL (Idempotent cloud design)
+        existing_url = db.query(URLItem).filter(
+            URLItem.original_url == payload.url,
+            URLItem.is_active == True,
+        ).first()
+        if existing_url:
+            base_url = str(request.base_url).rstrip("/")
+            return URLShortenResponse(
+                status="success (reused duplicate)",
+                short_code=existing_url.short_code,
+                short_url=f"{base_url}/{existing_url.short_code}",
+                original_url=existing_url.original_url,
+                created_at=existing_url.created_at.isoformat(),
+                code_type="reused_existing",
+            )
+
+        # 3. Generate collision-resistant Base62 code
         code_type = "random_base62"
         max_attempts = 10
         code = None

@@ -149,7 +149,9 @@ def test_batch_store_multiple_urls_to_database():
 def test_shorten_invalid_url_rejected():
     """Verify malformed URLs are rejected before touching database."""
     response = client.post("/api/shorten", json={"url": "ftp://bad-scheme.com"})
-    assert response.status_code == 422
+    assert response.status_code == 400
+    assert "error" in response.json()
+    assert "Unsupported URL scheme" in response.json()["detail"]
 
 
 # --- Lab 8 Tests: URL Redirection ---
@@ -169,5 +171,69 @@ def test_redirect_non_existing_code_returns_404():
     """Verify GET /{short_code} returns 404 if code is not in database."""
     response = client.get("/not-found-xyz", follow_redirects=False)
     assert response.status_code == 404
+    assert response.json()["error"] is True
     assert "not found" in response.json()["detail"].lower()
+
+
+# --- Lab 9 Tests: Comprehensive Error Handling ---
+def test_lab9_error_invalid_urls():
+    """Verify handling of invalid schemes and malformed domain structures."""
+    # Invalid scheme
+    r1 = client.post("/api/shorten", json={"url": "javascript:alert('attack')"})
+    assert r1.status_code == 400
+    assert r1.json()["error"] is True
+    assert "Unsupported URL scheme" in r1.json()["detail"]
+
+    # Invalid host
+    r2 = client.post("/api/shorten", json={"url": "https://not a valid domain"})
+    assert r2.status_code == 400
+    assert r2.json()["error"] is True
+
+
+def test_lab9_error_empty_input():
+    """Verify handling of empty strings or missing payload fields."""
+    r1 = client.post("/api/shorten", json={"url": ""})
+    assert r1.status_code == 400
+    assert r1.json()["error"] is True
+    assert "cannot be empty" in r1.json()["detail"]
+
+    r2 = client.post("/api/shorten", json={})
+    assert r2.status_code == 400
+    assert r2.json()["error"] is True
+
+
+def test_lab9_error_non_existing_short_codes():
+    """Verify querying non-existent short codes returns structured 404."""
+    r1 = client.get("/non-existent-code-99", follow_redirects=False)
+    assert r1.status_code == 404
+    assert r1.json()["error"] is True
+    assert r1.json()["status_code"] == 404
+    assert "not found" in r1.json()["detail"].lower()
+
+    r2 = client.get("/api/urls/missing-code-123")
+    assert r2.status_code == 404
+    assert r2.json()["error"] is True
+
+
+def test_lab9_error_duplicate_urls_and_custom_aliases():
+    """Verify duplicate vanity alias yields 409, and duplicate long URL is reused."""
+    # 1. Custom alias conflict (409)
+    res1 = client.post("/api/shorten", json={"url": "https://aws.amazon.com/ec2/", "custom_code": "vanity-code"})
+    assert res1.status_code == 201
+
+    res2 = client.post("/api/shorten", json={"url": "https://aws.amazon.com/s3/", "custom_code": "vanity-code"})
+    assert res2.status_code == 409
+    assert res2.json()["error"] is True
+    assert "already in use" in res2.json()["detail"]
+
+    # 2. Duplicate long URL without custom code: returns existing short code without duplicating rows
+    res3 = client.post("/api/shorten", json={"url": "https://aws.amazon.com/lambda/"})
+    assert res3.status_code == 201
+    code1 = res3.json()["short_code"]
+
+    res4 = client.post("/api/shorten", json={"url": "https://aws.amazon.com/lambda/"})
+    assert res4.status_code == 201
+    assert res4.json()["short_code"] == code1
+    assert "reused" in res4.json()["status"]
+
 
