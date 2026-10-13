@@ -11,6 +11,7 @@ from typing import List, Optional
 from urllib.parse import urlparse
 
 from fastapi import Depends, FastAPI, HTTPException, Request, status
+from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
@@ -335,3 +336,48 @@ def retrieve_stored_url_by_code(
         "created_at": record.created_at.isoformat() if record.created_at else None,
         "is_active": record.is_active,
     }
+
+
+# ==========================================
+# 8. URL Redirection Endpoint (GET) - Lab 8
+# ==========================================
+@app.get(
+    "/{short_code}",
+    response_class=RedirectResponse,
+    status_code=status.HTTP_307_TEMPORARY_REDIRECT,
+    tags=["URL Redirection"],
+    summary="Redirect Short Code to Original Website",
+    description="Looks up the short code in SQLite and issues an HTTP 307 Temporary Redirect to the original destination URL.",
+)
+def redirect_to_original_url(
+    short_code: str,
+    db: Session = Depends(get_db),
+):
+    """
+    Lab 8: URL Redirection
+    1. Retrieve original URL from SQLite using indexed short_code.
+    2. Validate active status.
+    3. Issue HTTP 307 Temporary Redirect.
+    """
+    # Exclude system documentation paths if accessed
+    if short_code in ("docs", "redoc", "openapi.json", "favicon.ico", "health"):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found.")
+
+    record = db.query(URLItem).filter(URLItem.short_code == short_code).first()
+    if not record:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Short code '{short_code}' not found.",
+        )
+
+    if not record.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_410_GONE,
+            detail=f"This short URL has been deactivated.",
+        )
+
+    return RedirectResponse(
+        url=record.original_url,
+        status_code=status.HTTP_307_TEMPORARY_REDIRECT,
+    )
+

@@ -34,7 +34,7 @@ cloud-url-shortener/
 - [x] **Lab 5**: Generate Unique Short Codes
 - [x] **Lab 6**: SQLite Database Design
 - [x] **Lab 7**: Store URLs Through API
-- [ ] **Lab 8**: URL Redirection Implementation
+- [x] **Lab 8**: URL Redirection Implementation
 - [ ] **Lab 9**: Comprehensive Error Handling
 - [ ] **Lab 10**: Access Tracking & Click Analytics
 - [ ] **Lab 11**: URL Expiration & Time-To-Live (TTL)

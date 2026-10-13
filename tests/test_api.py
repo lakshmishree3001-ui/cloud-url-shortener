@@ -150,3 +150,24 @@ def test_shorten_invalid_url_rejected():
     """Verify malformed URLs are rejected before touching database."""
     response = client.post("/api/shorten", json={"url": "ftp://bad-scheme.com"})
     assert response.status_code == 422
+
+
+# --- Lab 8 Tests: URL Redirection ---
+def test_redirect_to_original_url_success():
+    """Verify GET /{short_code} returns HTTP 307 redirect pointing to target URL."""
+    target = "https://aws.amazon.com/s3/"
+    post_res = client.post("/api/shorten", json={"url": target, "custom_code": "s3-redirect"})
+    assert post_res.status_code == 201
+
+    # Request redirection without following redirect automatically
+    redirect_res = client.get("/s3-redirect", follow_redirects=False)
+    assert redirect_res.status_code == 307
+    assert redirect_res.headers["location"] == target
+
+
+def test_redirect_non_existing_code_returns_404():
+    """Verify GET /{short_code} returns 404 if code is not in database."""
+    response = client.get("/not-found-xyz", follow_redirects=False)
+    assert response.status_code == 404
+    assert "not found" in response.json()["detail"].lower()
+
