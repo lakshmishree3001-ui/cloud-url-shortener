@@ -1,0 +1,27 @@
+version: "3.8"
+
+services:
+  url-shortener:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: cloud-url-shortener:latest
+    container_name: url-shortener-app
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      - DATABASE_URL=sqlite:////app/data/urls.db
+      - PORT=8000
+    volumes:
+      - url-shortener-data:/app/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+
+volumes:
+  url-shortener-data:
+    name: url-shortener-data

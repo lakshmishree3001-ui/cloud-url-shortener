@@ -39,6 +39,6 @@ cloud-url-shortener/
 - [x] **Lab 10**: Access Tracking & Click Analytics
 - [x] **Lab 11**: URL Expiration & Time-To-Live (TTL)
 - [x] **Lab 12**: Analytics & Statistics API
-- [ ] **Lab 13**: Docker Containerization
+- [x] **Lab 13**: Docker Containerization
 - [ ] **Lab 14**: Testing, Validation & Documentation
 - [ ] **Lab 15**: Cloud Architecture Mapping & AWS Deployment

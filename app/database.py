@@ -1,21 +1,29 @@
 """
 Database configuration and session management module.
 Lab 6: SQLite Database Engine & Session Factory
+Lab 13: 12-Factor Cloud & Containerized Database Configuration
 """
 import os
 from sqlalchemy import create_engine
 from sqlalchemy.orm import declarative_base, sessionmaker
 
-# Database file path: urls.db in project root
-DB_FILE_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "urls.db"))
-DATABASE_URL = f"sqlite:///{DB_FILE_PATH}"
+# Configurable database URL (12-Factor cloud configuration)
+# Defaults to urls.db in project root if not specified via environment variable
+DEFAULT_DB_FILE = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "urls.db"))
+DATABASE_URL = os.getenv("DATABASE_URL", f"sqlite:///{DEFAULT_DB_FILE}")
 
-# Create SQLite engine
-# check_same_thread=False allows FastAPI async endpoints across multiple threads
+# Automatically ensure parent directory exists for SQLite files (e.g., in Docker /app/data)
+if DATABASE_URL.startswith("sqlite:///"):
+    sqlite_file = DATABASE_URL.replace("sqlite:///", "")
+    if sqlite_file and sqlite_file != ":memory:":
+        os.makedirs(os.path.dirname(os.path.abspath(sqlite_file)), exist_ok=True)
+
+# Create SQLAlchemy engine
+# check_same_thread=False allows FastAPI async endpoints across worker threads in SQLite
 engine = create_engine(
     DATABASE_URL,
-    connect_args={"check_same_thread": False},
-    echo=False,  # Set to True for verbose SQL query logging
+    connect_args={"check_same_thread": False} if DATABASE_URL.startswith("sqlite") else {},
+    echo=False,
 )
 
 # Create SessionLocal class for database transactions
