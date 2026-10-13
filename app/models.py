@@ -3,12 +3,13 @@ Data models and Pydantic validation schemas.
 Lab 4: URL Intake and Validation Schemas
 Lab 5: Short Code Generation and Batch Schemas
 Lab 6: SQLAlchemy URLItem ORM Table Model
+Lab 10: Access Tracking and Click Statistics Schemas
+Lab 11: URL Expiration and TTL Schemas
 """
 from datetime import datetime, timezone
 from typing import List, Optional
-from urllib.parse import urlparse
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from sqlalchemy import Boolean, Column, DateTime, Integer, String
 
 from app.database import Base
@@ -22,7 +23,7 @@ class URLItem(Base):
     """
     SQLAlchemy ORM model representing the 'urls' table in SQLite.
     In AWS, this schema maps directly to Amazon RDS (PostgreSQL/MySQL)
-    or Amazon DynamoDB items.
+    or Amazon DynamoDB items with native TTL attributes.
     """
     __tablename__ = "urls"
 
@@ -70,7 +71,7 @@ class URLIntakeResponse(BaseModel):
 
 
 class URLShortenRequest(BaseModel):
-    """Request schema for shortening a URL with optional custom alias."""
+    """Request schema for shortening a URL with optional custom alias and expiration (TTL)."""
     url: str = Field(
         ...,
         description="Target destination URL to shorten",
@@ -80,6 +81,20 @@ class URLShortenRequest(BaseModel):
         default=None,
         description="Optional custom vanity code (4-16 alphanumeric characters)",
         examples=["aws-blog"],
+    )
+    expires_in_hours: Optional[int] = Field(
+        default=None,
+        ge=1,
+        le=8760,
+        description="Optional expiration in hours (1 to 8760 hours, e.g., 24 for 1 day)",
+        examples=[24],
+    )
+    expires_in_days: Optional[int] = Field(
+        default=None,
+        ge=1,
+        le=365,
+        description="Optional expiration in days (1 to 365 days)",
+        examples=[7],
     )
 
     @field_validator("url")
@@ -102,19 +117,26 @@ class URLShortenRequest(BaseModel):
             return clean
         return None
 
+    @model_validator(mode="after")
+    def validate_expiration_options(self):
+        if self.expires_in_hours is not None and self.expires_in_days is not None:
+            raise ValueError("Specify either 'expires_in_hours' or 'expires_in_days', not both.")
+        return self
+
 
 class URLShortenResponse(BaseModel):
-    """Response containing the generated short code and full short URL."""
+    """Response containing the generated short code, full short URL, and expiration."""
     status: str = "success"
     short_code: str
     short_url: str
     original_url: str
     created_at: str
+    expires_at: Optional[str] = None
     code_type: str = "random_base62"  # or 'custom_alias'
 
 
 class URLBatchRequest(BaseModel):
-    """Request schema for batch shortening multiple URLs."""
+    """Request schema for batch shortening multiple URLs with optional expiration."""
     urls: List[str] = Field(
         ...,
         min_length=1,
@@ -126,6 +148,24 @@ class URLBatchRequest(BaseModel):
             "https://aws.amazon.com/dynamodb/"
         ]]
     )
+    expires_in_hours: Optional[int] = Field(
+        default=None,
+        ge=1,
+        le=8760,
+        description="Optional expiration in hours for all URLs in the batch",
+    )
+    expires_in_days: Optional[int] = Field(
+        default=None,
+        ge=1,
+        le=365,
+        description="Optional expiration in days for all URLs in the batch",
+    )
+
+    @model_validator(mode="after")
+    def validate_expiration_options(self):
+        if self.expires_in_hours is not None and self.expires_in_days is not None:
+            raise ValueError("Specify either 'expires_in_hours' or 'expires_in_days', not both.")
+        return self
 
 
 class URLBatchResponse(BaseModel):
@@ -145,12 +185,14 @@ class URLDatabaseRecord(BaseModel):
     last_accessed_at: Optional[datetime] = None
     expires_at: Optional[datetime] = None
     is_active: bool
+    is_expired: bool = False
+    time_remaining_seconds: Optional[int] = None
 
     model_config = {"from_attributes": True}
 
 
 class URLStatsResponse(BaseModel):
-    """Schema representing URL access tracking and click statistics (Lab 10)."""
+    """Schema representing URL access tracking and click statistics (Lab 10 & 11)."""
     short_code: str
     original_url: str
     click_count: int
@@ -158,7 +200,8 @@ class URLStatsResponse(BaseModel):
     last_accessed_at: Optional[datetime] = None
     expires_at: Optional[datetime] = None
     is_active: bool
+    is_expired: bool = False
+    time_remaining_seconds: Optional[int] = None
     status: str = "active"
 
     model_config = {"from_attributes": True}
-

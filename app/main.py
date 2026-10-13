@@ -1,22 +1,26 @@
 """
-FastAPI application entrypoint for Cloud URL Shortener.
-Lab 3: Basic Web API (GET & POST Endpoints)
-Lab 4: Accept Long URLs & URL Validation
-Lab 5: Generate Unique Short Codes & Batch Operations
-Lab 6 & 7: SQLite Database Integration (Persistent Storage via API)
+Cloud-Based URL Shortener API Service.
+Lab 3: Core API Endpoints (Health, Echo, Root)
+Lab 4: URL Intake and Validation Endpoints
+Lab 5: Base62 Short Code Generation Endpoints
+Lab 6: SQLite Database Engine & Lifespan Migrations
+Lab 7: Persistent SQLite URL Storage & Retrieval Endpoints
+Lab 8: URL Redirection (HTTP 307 Temporary Redirect)
+Lab 9: Global Exception Handling & Error Management
+Lab 10: Access Tracking & Real-Time Click Analytics
+Lab 11: URL Expiration & Time-To-Live (TTL) Management
 """
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import List, Optional
-from urllib.parse import urlparse
 
 from fastapi import Depends, FastAPI, HTTPException, Request, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, RedirectResponse
-from pydantic import BaseModel, Field
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from app.database import get_db, init_db
+from app.database import Base, engine, get_db
 from app.models import (
     URLBatchRequest,
     URLBatchResponse,
@@ -30,43 +34,84 @@ from app.models import (
 )
 from app.utils import (
     generate_short_code,
-    hash_url_to_code,
     is_valid_custom_code,
     is_valid_url,
 )
+from pydantic import BaseModel, Field
 
 
+# ==========================================
+# TTL & Expiration Helpers (Lab 11)
+# ==========================================
+def is_url_expired(record: URLItem) -> bool:
+    """
+    Checks if a URLItem has an expiration date set and has passed it in UTC.
+    Safely handles both timezone-naive and timezone-aware datetimes from SQLite.
+    """
+    if not record.expires_at:
+        return False
+    exp = record.expires_at
+    if exp.tzinfo is None:
+        exp = exp.replace(tzinfo=timezone.utc)
+    return datetime.now(timezone.utc) > exp
+
+
+def get_time_remaining_seconds(record: URLItem) -> Optional[int]:
+    """
+    Calculates remaining seconds until expiration.
+    Returns 0 if already expired, None if no expiration was set.
+    """
+    if not record.expires_at:
+        return None
+    exp = record.expires_at
+    if exp.tzinfo is None:
+        exp = exp.replace(tzinfo=timezone.utc)
+    diff = (exp - datetime.now(timezone.utc)).total_seconds()
+    return max(0, int(diff))
+
+
+# ==========================================
+# Application Lifespan (Database Initializer)
+# ==========================================
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Lifecycle manager: initializes SQLite database schema on startup."""
-    init_db()
+    """
+    Ensures SQLite tables are created automatically when the FastAPI app starts.
+    In cloud environments, this mirrors automated schema migrations (e.g., Flyway, Alembic)
+    running during container boot on AWS ECS or AWS App Runner.
+    """
+    Base.metadata.create_all(bind=engine)
     yield
 
 
-# Initialize FastAPI application
 app = FastAPI(
-    title="Cloud-Based URL Shortener API",
-    description="A cloud-native URL shortening service simulation. Connected to persistent SQLite database storage, featuring RESTful endpoints, health probes, and interactive OpenAPI documentation.",
-    version="1.0.0",
-    docs_url="/docs",
-    redoc_url="/redoc",
+    title="Cloud-Based URL Shortener",
+    description=(
+        "Production-ready URL Shortener simulation built with FastAPI, SQLite, "
+        "and Base62 collision-resistant hashing. Designed to reflect enterprise "
+        "AWS Cloud Architecture (Route 53 -> CloudFront -> ALB -> ECS -> RDS/DynamoDB)."
+    ),
+    version="1.1.0",
     lifespan=lifespan,
 )
 
 
 # ==========================================
-# Lab 9: Centralized Global Error Handlers
+# Global Exception Handlers (Lab 9)
 # ==========================================
 @app.exception_handler(HTTPException)
-async def custom_http_exception_handler(request: Request, exc: HTTPException):
-    """Formats all standard HTTP exceptions into uniform cloud JSON error format."""
+async def http_exception_handler(request: Request, exc: HTTPException):
+    """
+    Global handler for standard HTTPExceptions.
+    Returns a consistent JSON error schema across all endpoints.
+    """
     return JSONResponse(
         status_code=exc.status_code,
         content={
             "error": True,
             "status_code": exc.status_code,
             "detail": exc.detail,
-            "path": request.url.path,
+            "path": str(request.url.path),
             "timestamp": datetime.now(timezone.utc).isoformat(),
         },
     )
@@ -75,32 +120,33 @@ async def custom_http_exception_handler(request: Request, exc: HTTPException):
 @app.exception_handler(RequestValidationError)
 async def validation_exception_handler(request: Request, exc: RequestValidationError):
     """
-    Catches invalid URLs, empty strings, and malformed payload bodies.
-    Returns clean 400 Bad Request error details.
+    Global handler for request body / parameter validation failures.
+    Translates Pydantic errors into human-readable 400 Bad Request responses.
     """
-    messages = []
+    error_messages = []
     for err in exc.errors():
+        field = " -> ".join(str(loc) for loc in err.get("loc", []))
         msg = err.get("msg", "Validation error")
-        if msg.startswith("Value error, "):
-            msg = msg[len("Value error, "):]
-        messages.append(msg)
+        error_messages.append(f"Field '{field}': {msg}")
 
     return JSONResponse(
         status_code=status.HTTP_400_BAD_REQUEST,
         content={
             "error": True,
             "status_code": status.HTTP_400_BAD_REQUEST,
-            "detail": "; ".join(messages) if messages else "Invalid or empty input provided.",
-            "path": request.url.path,
+            "detail": "; ".join(error_messages),
+            "path": str(request.url.path),
             "timestamp": datetime.now(timezone.utc).isoformat(),
         },
     )
 
 
-# Pydantic Schemas for Lab 3 Echo endpoints
+# ==========================================
+# Pydantic Schemas for Echo/Testing
+# ==========================================
 class EchoRequest(BaseModel):
-    message: str = Field(..., min_length=1, max_length=500, description="Message to send to the server", examples=["Hello Cloud API!"])
-    client_name: str = Field(default="Browser/Postman Client", max_length=100, description="Identifier of the client calling the API")
+    message: str = Field(..., min_length=1, max_length=500, description="Message to be echoed")
+    client_name: Optional[str] = Field(default="Anonymous", description="Identifier of the caller")
 
 
 class EchoResponse(BaseModel):
@@ -112,29 +158,31 @@ class EchoResponse(BaseModel):
 
 
 # ==========================================
-# 1. Root & Discovery Endpoint (GET)
+# 1. Root / Service Metadata Endpoint (GET)
 # ==========================================
 @app.get(
     "/",
-    tags=["General"],
-    summary="Root Service Info",
-    description="Returns metadata about the URL Shortener service and available API documentation.",
+    tags=["Core"],
+    summary="Service Welcome and Cloud Metadata",
+    description="Returns welcome message, cloud architecture mapping, and service status.",
+    status_code=status.HTTP_200_OK,
 )
-def read_root(db: Session = Depends(get_db)):
-    url_count = db.query(URLItem).count()
+def root(db: Session = Depends(get_db)):
+    persisted_count = db.query(URLItem).count()
     return {
         "service": "Cloud-Based URL Shortener",
-        "version": "1.0.0",
         "status": "online",
-        "cloud_provider_simulation": "AWS (App Runner / ECS + RDS/DynamoDB)",
-        "total_persisted_urls": url_count,
+        "version": "1.1.0",
+        "aws_architecture_tier": "Compute Tier (Simulated ECS Fargate / EC2)",
+        "database_tier": "Storage Tier (SQLite simulating Amazon RDS)",
+        "total_persisted_urls": persisted_count,
         "docs_url": "/docs",
         "redoc_url": "/redoc",
     }
 
 
 # ==========================================
-# 2. Cloud Health Check Endpoint (GET)
+# 2. Health Check Probe (GET) - Lab 3
 # ==========================================
 @app.get(
     "/health",
@@ -144,7 +192,6 @@ def read_root(db: Session = Depends(get_db)):
     status_code=status.HTTP_200_OK,
 )
 def health_check(db: Session = Depends(get_db)):
-    # Verify live database query execution
     count = db.query(URLItem).count()
     return {
         "status": "healthy",
@@ -177,14 +224,17 @@ def echo_payload(payload: EchoRequest):
 
 
 # ==========================================
-# 4. Store URL Through API (POST) - Lab 7
+# 4. Store URL Through API (POST) - Lab 7 & Lab 11
 # ==========================================
 @app.post(
     "/api/shorten",
     response_model=URLShortenResponse,
     tags=["URL Shortener"],
-    summary="Shorten and Store URL in SQLite",
-    description="Validates long URL, generates a unique Base62 code, and persists the record into SQLite database.",
+    summary="Shorten and Store URL in SQLite with Optional Expiration",
+    description=(
+        "Validates long URL, supports optional custom vanity alias and expiration (TTL), "
+        "and persists the record into the database."
+    ),
     status_code=status.HTTP_201_CREATED,
 )
 def create_and_store_url(
@@ -192,40 +242,55 @@ def create_and_store_url(
     request: Request,
     db: Session = Depends(get_db),
 ):
-    """
-    Connects API to SQLite:
-    1. Validates custom code or generates random 6-character Base62 code.
-    2. Enforces uniqueness constraint.
-    3. Persists record to SQLite disk.
-    """
-    # 1. Custom vanity alias check
+    now_utc = datetime.now(timezone.utc)
+
+    # 1. Calculate expiration (TTL) if requested (Lab 11)
+    expires_at = None
+    if payload.expires_in_hours is not None:
+        expires_at = now_utc + timedelta(hours=payload.expires_in_hours)
+    elif payload.expires_in_days is not None:
+        expires_at = now_utc + timedelta(days=payload.expires_in_days)
+
+    # 2. Custom vanity alias check
     if payload.custom_code:
         code = payload.custom_code
         existing = db.query(URLItem).filter(URLItem.short_code == code).first()
         if existing:
+            # Check if existing custom code is already expired
+            if is_url_expired(existing):
+                existing.is_active = False
+                db.commit()
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail=f"Custom short code '{code}' is already in use. Please select a different vanity alias.",
             )
         code_type = "custom_alias"
     else:
-        # 2. Check for duplicate long URL (Idempotent cloud design)
-        existing_url = db.query(URLItem).filter(
-            URLItem.original_url == payload.url,
-            URLItem.is_active == True,
-        ).first()
-        if existing_url:
-            base_url = str(request.base_url).rstrip("/")
-            return URLShortenResponse(
-                status="success (reused duplicate)",
-                short_code=existing_url.short_code,
-                short_url=f"{base_url}/{existing_url.short_code}",
-                original_url=existing_url.original_url,
-                created_at=existing_url.created_at.isoformat(),
-                code_type="reused_existing",
-            )
+        # 3. Check for duplicate long URL (Idempotent cloud design)
+        # Only reuse if no custom expiration was requested
+        if payload.expires_in_hours is None and payload.expires_in_days is None:
+            existing_url = db.query(URLItem).filter(
+                URLItem.original_url == payload.url,
+                URLItem.is_active == True,
+            ).first()
 
-        # 3. Generate collision-resistant Base62 code
+            if existing_url:
+                if is_url_expired(existing_url):
+                    existing_url.is_active = False
+                    db.commit()
+                else:
+                    base_url = str(request.base_url).rstrip("/")
+                    return URLShortenResponse(
+                        status="success (reused duplicate)",
+                        short_code=existing_url.short_code,
+                        short_url=f"{base_url}/{existing_url.short_code}",
+                        original_url=existing_url.original_url,
+                        created_at=existing_url.created_at.isoformat(),
+                        expires_at=existing_url.expires_at.isoformat() if existing_url.expires_at else None,
+                        code_type="reused_existing",
+                    )
+
+        # 4. Generate collision-resistant Base62 code
         code_type = "random_base62"
         max_attempts = 10
         code = None
@@ -242,20 +307,20 @@ def create_and_store_url(
                 detail="Failed to generate unique short code. Please try again.",
             )
 
-    # 3. Create ORM instance and persist to SQLite
-    now_utc = datetime.now(timezone.utc)
+    # 5. Create ORM instance and persist to SQLite
     new_url = URLItem(
         short_code=code,
         original_url=payload.url,
         click_count=0,
         created_at=now_utc,
+        expires_at=expires_at,
         is_active=True,
     )
     db.add(new_url)
     db.commit()
     db.refresh(new_url)
 
-    # 4. Construct complete short URL using request host
+    # 6. Construct complete short URL using request host
     base_url = str(request.base_url).rstrip("/")
     short_url = f"{base_url}/{code}"
 
@@ -265,18 +330,19 @@ def create_and_store_url(
         short_url=short_url,
         original_url=payload.url,
         created_at=new_url.created_at.isoformat(),
+        expires_at=new_url.expires_at.isoformat() if new_url.expires_at else None,
         code_type=code_type,
     )
 
 
 # ==========================================
-# 5. Batch Store Multiple URLs (POST) - Lab 7
+# 5. Batch Store Multiple URLs (POST) - Lab 7 & Lab 11
 # ==========================================
 @app.post(
     "/api/shorten/batch",
     response_model=URLBatchResponse,
     tags=["URL Shortener"],
-    summary="Batch Shorten and Store Multiple URLs",
+    summary="Batch Shorten and Store Multiple URLs with Optional TTL",
     description="Processes and saves multiple URLs into SQLite in a single atomic database transaction.",
     status_code=status.HTTP_201_CREATED,
 )
@@ -286,7 +352,14 @@ def batch_store_urls(
     db: Session = Depends(get_db),
 ):
     base_url = str(request.base_url).rstrip("/")
+    now_utc = datetime.now(timezone.utc)
     results = []
+
+    expires_at = None
+    if payload.expires_in_hours is not None:
+        expires_at = now_utc + timedelta(hours=payload.expires_in_hours)
+    elif payload.expires_in_days is not None:
+        expires_at = now_utc + timedelta(days=payload.expires_in_days)
 
     for url_str in payload.urls:
         valid, _ = is_valid_url(url_str)
@@ -302,16 +375,16 @@ def batch_store_urls(
                 break
 
         if code:
-            now_utc = datetime.now(timezone.utc)
             item = URLItem(
                 short_code=code,
                 original_url=url_str.strip(),
                 click_count=0,
                 created_at=now_utc,
+                expires_at=expires_at,
                 is_active=True,
             )
             db.add(item)
-            db.flush()  # Stage in session
+            db.flush()
 
             results.append(
                 URLShortenResponse(
@@ -320,11 +393,11 @@ def batch_store_urls(
                     short_url=f"{base_url}/{code}",
                     original_url=url_str.strip(),
                     created_at=now_utc.isoformat(),
+                    expires_at=expires_at.isoformat() if expires_at else None,
                     code_type="batch_random_base62",
                 )
             )
 
-    # Commit entire batch transaction
     db.commit()
 
     return URLBatchResponse(
@@ -335,13 +408,13 @@ def batch_store_urls(
 
 
 # ==========================================
-# 6. Retrieve Stored URLs (GET) - Lab 7
+# 6. Retrieve Stored URLs (GET) - Lab 7 & Lab 11
 # ==========================================
 @app.get(
     "/api/urls",
     tags=["URL Shortener"],
     summary="Retrieve All Stored URLs from SQLite",
-    description="Queries and returns all persistent URL records from the SQLite database.",
+    description="Queries and returns all persistent URL records from the SQLite database with expiration status.",
 )
 def retrieve_all_stored_urls(
     skip: int = 0,
@@ -362,7 +435,10 @@ def retrieve_all_stored_urls(
                 "original_url": r.original_url,
                 "click_count": r.click_count,
                 "created_at": r.created_at.isoformat() if r.created_at else None,
-                "is_active": r.is_active,
+                "expires_at": r.expires_at.isoformat() if r.expires_at else None,
+                "is_expired": is_url_expired(r),
+                "time_remaining_seconds": get_time_remaining_seconds(r),
+                "is_active": r.is_active and not is_url_expired(r),
             }
             for r in records
         ],
@@ -370,13 +446,13 @@ def retrieve_all_stored_urls(
 
 
 # ==========================================
-# 7. Retrieve Stored URL by Short Code (GET) - Lab 7
+# 7. Retrieve Stored URL by Short Code (GET) - Lab 7 & Lab 11
 # ==========================================
 @app.get(
     "/api/urls/{short_code}",
     tags=["URL Shortener"],
     summary="Retrieve Stored URL Record by Short Code",
-    description="Queries SQLite for a specific short code and returns its full metadata.",
+    description="Queries SQLite for a specific short code and returns its full metadata and TTL status.",
 )
 def retrieve_stored_url_by_code(
     short_code: str,
@@ -389,6 +465,8 @@ def retrieve_stored_url_by_code(
             detail=f"Short code '{short_code}' not found in SQLite database.",
         )
 
+    expired = is_url_expired(record)
+
     return {
         "id": record.id,
         "short_code": record.short_code,
@@ -396,12 +474,15 @@ def retrieve_stored_url_by_code(
         "click_count": record.click_count,
         "created_at": record.created_at.isoformat() if record.created_at else None,
         "last_accessed_at": record.last_accessed_at.isoformat() if record.last_accessed_at else None,
-        "is_active": record.is_active,
+        "expires_at": record.expires_at.isoformat() if record.expires_at else None,
+        "is_expired": expired,
+        "time_remaining_seconds": get_time_remaining_seconds(record),
+        "is_active": record.is_active and not expired,
     }
 
 
 # ==========================================
-# 8. URL Redirection & Access Tracking (GET) - Lab 8 & Lab 10
+# 8. URL Redirection & Access Tracking (GET) - Lab 8, 10, & 11
 # ==========================================
 @app.get(
     "/{short_code}",
@@ -409,20 +490,24 @@ def retrieve_stored_url_by_code(
     status_code=status.HTTP_307_TEMPORARY_REDIRECT,
     tags=["URL Redirection"],
     summary="Redirect Short Code to Original Website",
-    description="Looks up the short code in SQLite, increments the access tracking counter, and issues an HTTP 307 Temporary Redirect.",
+    description=(
+        "Looks up the short code in SQLite, validates expiration (TTL), "
+        "increments access counters, and issues an HTTP 307 Temporary Redirect."
+    ),
 )
 def redirect_to_original_url(
     short_code: str,
     db: Session = Depends(get_db),
 ):
     """
-    Lab 8 & Lab 10: URL Redirection + Access Tracking
+    Lab 8, 10 & 11: URL Redirection + Access Tracking + Expiration Check
     1. Retrieve original URL from SQLite using indexed short_code.
-    2. Check active status.
-    3. Atomically increment click_count and record last_accessed_at timestamp.
-    4. Issue HTTP 307 Temporary Redirect.
+    2. Check expiration (TTL): If expired, mark is_active=False and return HTTP 410 Gone.
+    3. Check active status.
+    4. Atomically increment click_count and record last_accessed_at timestamp.
+    5. Issue HTTP 307 Temporary Redirect.
     """
-    # Exclude system documentation paths if accessed
+    # Exclude system documentation paths
     if short_code in ("docs", "redoc", "openapi.json", "favicon.ico", "health"):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found.")
 
@@ -433,13 +518,23 @@ def redirect_to_original_url(
             detail=f"Short code '{short_code}' not found.",
         )
 
+    # Lab 11: Expiration check (TTL)
+    if is_url_expired(record):
+        if record.is_active:
+            record.is_active = False
+            db.commit()
+        raise HTTPException(
+            status_code=status.HTTP_410_GONE,
+            detail=f"This short URL has expired on {record.expires_at.isoformat()} and is no longer accessible.",
+        )
+
     if not record.is_active:
         raise HTTPException(
             status_code=status.HTTP_410_GONE,
-            detail=f"This short URL has been deactivated.",
+            detail="This short URL has been deactivated.",
         )
 
-    # Lab 10: Access Tracking - Increment click count & save last accessed timestamp
+    # Lab 10: Access Tracking
     record.click_count += 1
     record.last_accessed_at = datetime.now(timezone.utc)
     db.commit()
@@ -451,14 +546,14 @@ def redirect_to_original_url(
 
 
 # ==========================================
-# 9. Access Tracking & URL Statistics (GET) - Lab 10
+# 9. Access Tracking & URL Statistics (GET) - Lab 10 & 11
 # ==========================================
 @app.get(
     "/api/urls/{short_code}/stats",
     response_model=URLStatsResponse,
     tags=["Analytics & Statistics"],
-    summary="Get Access Tracking & Click Statistics for a Short URL",
-    description="Displays click count, creation date, and last access timestamp for a short link.",
+    summary="Get Access Tracking, Click Statistics, and TTL Status",
+    description="Displays click count, creation date, last access timestamp, and TTL expiration for a short link.",
 )
 def get_url_statistics(
     short_code: str,
@@ -471,6 +566,9 @@ def get_url_statistics(
             detail=f"Short code '{short_code}' not found in database.",
         )
 
+    expired = is_url_expired(record)
+    status_str = "expired" if expired else ("active" if record.is_active else "inactive")
+
     return URLStatsResponse(
         short_code=record.short_code,
         original_url=record.original_url,
@@ -478,8 +576,10 @@ def get_url_statistics(
         created_at=record.created_at,
         last_accessed_at=record.last_accessed_at,
         expires_at=record.expires_at,
-        is_active=record.is_active,
-        status="active" if record.is_active else "inactive",
+        is_active=record.is_active and not expired,
+        is_expired=expired,
+        time_remaining_seconds=get_time_remaining_seconds(record),
+        status=status_str,
     )
 
 
@@ -493,8 +593,6 @@ def get_url_statistics(
     description="Displays total links stored, total clicks across all links, and the most clicked link.",
 )
 def get_global_statistics(db: Session = Depends(get_db)):
-    from sqlalchemy import func
-
     total_links = db.query(URLItem).count()
     total_clicks = db.query(func.sum(URLItem.click_count)).scalar() or 0
     top_link = db.query(URLItem).order_by(URLItem.click_count.desc()).first()
@@ -511,3 +609,69 @@ def get_global_statistics(db: Session = Depends(get_db)):
     }
 
 
+# ==========================================
+# 11. TTL Maintenance & Cleanup (POST/GET) - Lab 11
+# ==========================================
+@app.post(
+    "/api/maintenance/cleanup-expired",
+    tags=["Maintenance & TTL"],
+    summary="Trigger Automated TTL Maintenance Cleanup",
+    description=(
+        "Simulates an AWS Lambda scheduled worker (triggered by Amazon EventBridge / CloudWatch) "
+        "that scans the database and deactivates expired links."
+    ),
+)
+def cleanup_expired_urls(db: Session = Depends(get_db)):
+    """
+    Simulates automated background TTL reaper in AWS:
+    1. Scans for active links whose expiration timestamp is in the past.
+    2. Marks is_active = False.
+    3. Commits the transaction in bulk.
+    """
+    records = db.query(URLItem).filter(
+        URLItem.is_active == True,
+        URLItem.expires_at.isnot(None),
+    ).all()
+
+    deactivated_count = 0
+    deactivated_codes = []
+    for r in records:
+        if is_url_expired(r):
+            r.is_active = False
+            deactivated_count += 1
+            deactivated_codes.append(r.short_code)
+
+    if deactivated_count > 0:
+        db.commit()
+
+    return {
+        "status": "success",
+        "deactivated_count": deactivated_count,
+        "deactivated_codes": deactivated_codes,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "cloud_architecture_simulation": "Amazon EventBridge -> AWS Lambda TTL Reaper",
+    }
+
+
+@app.get(
+    "/api/urls/status/expired",
+    tags=["Maintenance & TTL"],
+    summary="List All Expired URLs",
+    description="Queries all URLs that have passed their expiration timestamp.",
+)
+def list_expired_urls(db: Session = Depends(get_db)):
+    records = db.query(URLItem).filter(URLItem.expires_at.isnot(None)).all()
+    expired = [r for r in records if is_url_expired(r)]
+
+    return {
+        "total_expired": len(expired),
+        "expired_urls": [
+            {
+                "short_code": r.short_code,
+                "original_url": r.original_url,
+                "expires_at": r.expires_at.isoformat() if r.expires_at else None,
+                "is_active": r.is_active,
+            }
+            for r in expired
+        ],
+    }

@@ -1,18 +1,19 @@
 """
-Automated unit & integration tests for Labs 3 through 7.
-Tests API connectivity with SQLite database, endpoints, validation, and error scenarios.
+Automated unit & integration tests for Labs 3 through 11.
+Tests API connectivity with SQLite database, endpoints, validation, error scenarios,
+access tracking, click analytics, and URL expiration (TTL).
 """
+from datetime import datetime, timezone, timedelta
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import StaticPool
 
 from app.database import Base, get_db
 from app.main import app
 from app.models import URLItem
 from app.utils import BASE62_SET
-
-from sqlalchemy.pool import StaticPool
 
 # Create isolated in-memory test database with StaticPool so all sessions share the same in-memory DB
 test_engine = create_engine(
@@ -66,32 +67,31 @@ def test_health_check_endpoint():
     assert "persisted_records_count" in data
 
 
-def test_post_echo_endpoint():
-    """Verify POST /api/echo."""
-    payload = {"message": "Cloud Health Check", "client_name": "Pytest Client"}
+def test_echo_endpoint():
+    """Verify POST /api/echo responds with input payload."""
+    payload = {"message": "Cloud Architecture Test", "client_name": "PyTest"}
     response = client.post("/api/echo", json=payload)
     assert response.status_code == 200
-    assert response.json()["status"] == "success"
+    data = response.json()
+    assert data["received_message"] == "Cloud Architecture Test"
+    assert data["client_name"] == "PyTest"
 
 
-# --- Lab 4, 5, 7 Tests: Storing and Retrieving URLs through SQLite API ---
-def test_store_url_through_api():
-    """Verify POST /api/shorten saves URL to SQLite database automatically."""
-    payload = {"url": "https://aws.amazon.com/architecture/"}
+# --- Lab 7 Tests: SQLite Storage & Retrieval ---
+def test_store_url_creates_database_record():
+    """Verify POST /api/shorten saves a URL into SQLite database."""
+    payload = {"url": "https://aws.amazon.com/s3/"}
     response = client.post("/api/shorten", json=payload)
     assert response.status_code == 201
     data = response.json()
     assert data["status"] == "success"
-    code = data["short_code"]
-    assert len(code) == 6
-    assert all(c in BASE62_SET for c in code)
+    assert len(data["short_code"]) == 6
 
     # Verify retrieval from database via API
-    get_res = client.get(f"/api/urls/{code}")
+    get_res = client.get(f"/api/urls/{data['short_code']}")
     assert get_res.status_code == 200
     retrieved = get_res.json()
-    assert retrieved["short_code"] == code
-    assert retrieved["original_url"] == payload["url"]
+    assert retrieved["original_url"] == "https://aws.amazon.com/s3/"
     assert retrieved["click_count"] == 0
     assert retrieved["is_active"] is True
 
@@ -291,4 +291,137 @@ def test_lab10_global_analytics_summary():
     assert summary["most_clicked_link"]["clicks"] == 3
 
 
+# --- Lab 11 Tests: URL Expiration & Time-To-Live (TTL) ---
+def test_lab11_shorten_with_expiration_hours():
+    """Verify URL shortening with expires_in_hours sets expires_at in the future."""
+    res = client.post("/api/shorten", json={
+        "url": "https://aws.amazon.com/cloudtrail/",
+        "custom_code": "trail-ttl",
+        "expires_in_hours": 2,
+    })
+    assert res.status_code == 201
+    data = res.json()
+    assert data["expires_at"] is not None
 
+    # Query details
+    url_details = client.get("/api/urls/trail-ttl").json()
+    assert url_details["expires_at"] is not None
+    assert url_details["is_expired"] is False
+    assert url_details["time_remaining_seconds"] > 7000  # ~2 hours is 7200s
+
+    # Access redirection succeeds while active
+    redir = client.get("/trail-ttl", follow_redirects=False)
+    assert redir.status_code == 307
+
+
+def test_lab11_shorten_with_expiration_days():
+    """Verify URL shortening with expires_in_days sets expires_at correctly."""
+    res = client.post("/api/shorten", json={
+        "url": "https://aws.amazon.com/sns/",
+        "custom_code": "sns-ttl",
+        "expires_in_days": 7,
+    })
+    assert res.status_code == 201
+    data = res.json()
+    assert data["expires_at"] is not None
+
+    stats = client.get("/api/urls/sns-ttl/stats").json()
+    assert stats["is_expired"] is False
+    assert stats["time_remaining_seconds"] > 500000  # 7 days is 604,800s
+    assert stats["status"] == "active"
+
+
+def test_lab11_reject_both_hours_and_days():
+    """Verify submitting both expires_in_hours and expires_in_days returns 400."""
+    res = client.post("/api/shorten", json={
+        "url": "https://aws.amazon.com/sqs/",
+        "expires_in_hours": 12,
+        "expires_in_days": 2,
+    })
+    assert res.status_code == 400
+    assert res.json()["error"] is True
+    assert "not both" in res.json()["detail"].lower()
+
+
+def test_lab11_expired_url_returns_410_gone():
+    """Verify expired URL returns HTTP 410 Gone and deactivates is_active."""
+    db = TestingSessionLocal()
+    past_time = datetime.now(timezone.utc) - timedelta(hours=1)
+    expired_item = URLItem(
+        short_code="already-dead",
+        original_url="https://aws.amazon.com/expired/",
+        click_count=0,
+        created_at=datetime.now(timezone.utc) - timedelta(hours=2),
+        expires_at=past_time,
+        is_active=True,
+    )
+    db.add(expired_item)
+    db.commit()
+    db.close()
+
+    # Attempt redirection: must return 410 Gone
+    redir = client.get("/already-dead", follow_redirects=False)
+    assert redir.status_code == 410
+    assert "expired" in redir.json()["detail"].lower()
+
+    # Check stats endpoint reflects expiration
+    stats = client.get("/api/urls/already-dead/stats").json()
+    assert stats["is_expired"] is True
+    assert stats["is_active"] is False
+    assert stats["status"] == "expired"
+    assert stats["time_remaining_seconds"] == 0
+
+
+def test_lab11_maintenance_cleanup_sweeper():
+    """Verify POST /api/maintenance/cleanup-expired scans and marks expired records inactive."""
+    db = TestingSessionLocal()
+    now = datetime.now(timezone.utc)
+    # 1 expired item
+    db.add(URLItem(
+        short_code="sweep-me-1",
+        original_url="https://aws.amazon.com/sweep1/",
+        click_count=0,
+        created_at=now - timedelta(days=2),
+        expires_at=now - timedelta(days=1),
+        is_active=True,
+    ))
+    # 1 active item with future expiration
+    db.add(URLItem(
+        short_code="keep-me-active",
+        original_url="https://aws.amazon.com/keep/",
+        click_count=0,
+        created_at=now,
+        expires_at=now + timedelta(days=5),
+        is_active=True,
+    ))
+    db.commit()
+    db.close()
+
+    # Trigger maintenance cleanup
+    clean_res = client.post("/api/maintenance/cleanup-expired")
+    assert clean_res.status_code == 200
+    clean_data = clean_res.json()
+    assert clean_data["status"] == "success"
+    assert clean_data["deactivated_count"] >= 1
+    assert "sweep-me-1" in clean_data["deactivated_codes"]
+
+    # Verify query for expired URLs
+    expired_list = client.get("/api/urls/status/expired").json()
+    assert expired_list["total_expired"] >= 1
+
+
+def test_lab11_batch_shorten_with_ttl():
+    """Verify batch shortening handles optional TTL expiration."""
+    urls = [
+        "https://aws.amazon.com/athena/",
+        "https://aws.amazon.com/glue/",
+    ]
+    res = client.post("/api/shorten/batch", json={
+        "urls": urls,
+        "expires_in_hours": 48,
+    })
+    assert res.status_code == 201
+    data = res.json()
+    assert data["successful_count"] == 2
+    for item in data["items"]:
+        assert item["expires_at"] is not None
