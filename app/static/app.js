@@ -214,11 +214,12 @@ document.addEventListener('DOMContentLoaded', () => {
       const res = await fetch('/api/stats/report');
       if (!res.ok) throw new Error('Failed to load metrics');
       const data = await res.json();
+      const s = data.summary || data;
 
-      statTotalLinks.textContent = (data.total_urls || 0).toLocaleString();
-      statTotalClicks.textContent = (data.total_clicks || 0).toLocaleString();
-      statActiveLinks.textContent = (data.active_urls || 0).toLocaleString();
-      statExpiredLinks.textContent = (data.expired_urls || 0).toLocaleString();
+      statTotalLinks.textContent = (s.total_links || s.total_urls || 0).toLocaleString();
+      statTotalClicks.textContent = (s.total_clicks || 0).toLocaleString();
+      statActiveLinks.textContent = (s.active_links || s.active_urls || 0).toLocaleString();
+      statExpiredLinks.textContent = (s.expired_links || s.expired_urls || 0).toLocaleString();
 
       systemStatusIndicator.className = 'status-pill';
       systemStatusText.textContent = 'System Online';
@@ -383,7 +384,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
       if (topRes.ok) {
         const topData = await topRes.json();
-        renderTopLinks(topData.top_urls || []);
+        renderTopLinks(topData.top_links || topData.top_urls || []);
       }
 
       if (domRes.ok) {
@@ -431,15 +432,16 @@ document.addEventListener('DOMContentLoaded', () => {
       return;
     }
 
-    const maxCount = Math.max(...domains.map(d => d.url_count || 1), 1);
+    const maxCount = Math.max(...domains.map(d => d.link_count || d.url_count || 1), 1);
 
     domainDistributionList.innerHTML = domains.slice(0, 8).map(d => {
-      const percentage = Math.round(((d.url_count || 0) / maxCount) * 100);
+      const linkCount = d.link_count || d.url_count || 0;
+      const percentage = Math.round((linkCount / maxCount) * 100);
       return `
         <div class="domain-bar-item">
           <div class="domain-bar-header">
             <span style="font-weight: 500; color: var(--text-main); font-family: var(--font-mono); font-size: 0.82rem;">${escapeHtml(d.domain)}</span>
-            <span style="color: var(--text-muted); font-size: 0.78rem;">${(d.url_count || 0)} links (${(d.total_clicks || 0)} clicks)</span>
+            <span style="color: var(--text-muted); font-size: 0.78rem;">${linkCount} links (${(d.total_clicks || 0)} clicks)</span>
           </div>
           <div class="domain-bar-track">
             <div class="domain-bar-fill" style="width: ${percentage}%;"></div>
