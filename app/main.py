@@ -100,11 +100,26 @@ def extract_domain(url: str) -> str:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """
-    Ensures SQLite tables are created automatically when the FastAPI app starts.
+    Ensures SQLite tables and columns are created automatically when the FastAPI app starts.
     In cloud environments, this mirrors automated schema migrations (e.g., Flyway, Alembic)
     running during container boot on AWS ECS or AWS App Runner.
     """
     Base.metadata.create_all(bind=engine)
+    try:
+        from sqlalchemy import text
+        with engine.connect() as conn:
+            cur = conn.execute(text("PRAGMA table_info(urls)"))
+            existing_cols = [row[1] for row in cur.fetchall()]
+            if existing_cols:
+                if "last_accessed_at" not in existing_cols:
+                    conn.execute(text("ALTER TABLE urls ADD COLUMN last_accessed_at TIMESTAMP"))
+                if "expires_at" not in existing_cols:
+                    conn.execute(text("ALTER TABLE urls ADD COLUMN expires_at TIMESTAMP"))
+                if "is_active" not in existing_cols:
+                    conn.execute(text("ALTER TABLE urls ADD COLUMN is_active BOOLEAN DEFAULT 1"))
+                conn.commit()
+    except Exception:
+        pass
     yield
 
 
