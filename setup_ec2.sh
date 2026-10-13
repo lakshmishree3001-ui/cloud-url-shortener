@@ -1,7 +1,7 @@
 #!/bin/bash
 # ==============================================================================
 # AWS EC2 Cloud Setup Script for Cloud-Based URL Shortener
-# Supports Python 3.12, 3.13, and 3.14 on Ubuntu with PyO3 Forward Compatibility
+# Uses uv to guarantee pristine Python 3.12 with pre-compiled binary wheels
 # ==============================================================================
 
 set -e
@@ -11,14 +11,11 @@ SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 cd "$SCRIPT_DIR"
 
 echo "=========================================================="
-echo "🚀 Setting up AWS EC2 Cloud Environment for URL Shortener"
+echo "🚀 Setting up AWS EC2 Cloud Environment (Python 3.12 + uv)"
 echo "Working directory: $SCRIPT_DIR"
 echo "=========================================================="
 
-# 1. Export PyO3 ABI3 forward compatibility for Python 3.14
-export PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1
-
-# 2. Enable 2GB Swap memory (prevents t2.micro Out-Of-Memory errors)
+# 1. Enable 2GB Swap memory (prevents t2.micro memory pressure)
 if [ ! -f /swapfile ]; then
     echo "1. Adding 2GB swap memory..."
     sudo fallocate -l 2G /swapfile || sudo dd if=/dev/zero of=/swapfile bs=1M count=2048
@@ -31,31 +28,29 @@ else
     echo "1. Swap already enabled."
 fi
 
-# 3. Install system prerequisites & build tools
-echo "2. Installing system tools..."
+# 2. Install curl and build tools if missing
 sudo apt-get update -y
-sudo apt-get install -y python3-venv python3-pip unzip git curl build-essential
+sudo apt-get install -y curl unzip git
 
-# 4. Clean and recreate virtual environment
-echo "3. Creating clean Python virtual environment..."
+# 3. Install Astral uv (industry standard fast Python toolchain)
+if ! command -v uv &> /dev/null; then
+    echo "2. Installing Astral uv package manager..."
+    curl -LsSf https://astral.sh/uv/install.sh | sh
+fi
+export PATH="$HOME/.local/bin:$PATH"
+
+# 4. Create pristine Python 3.12 virtual environment (downloads standalone binary)
+echo "3. Creating Python 3.12 virtual environment..."
 rm -rf venv
-python3 -m venv venv
+uv venv --python 3.12 venv
 source venv/bin/activate
 
-# 5. Upgrade pip and build tools
-echo "4. Upgrading pip and build tools..."
-pip install --upgrade pip setuptools wheel
+# 5. Install all project dependencies using uv (ultra-fast pre-built wheels)
+echo "4. Installing dependencies with pre-built binary wheels..."
+uv pip install -r requirements.txt
 
-# 6. Install pydantic with Python 3.14 ABI3 forward compatibility
-echo "5. Installing pydantic and core dependencies..."
-PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1 pip install --upgrade pydantic pydantic-core
-
-# 7. Install remaining project dependencies
-echo "6. Installing remaining project requirements..."
-PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1 pip install -r requirements.txt
-
-# 8. Run test verification
-echo "7. Running test verification..."
+# 6. Run test verification
+echo "5. Running automated tests..."
 pytest -v
 
 echo "=========================================================="
